@@ -1,3 +1,6 @@
+//go:build !providerless
+// +build !providerless
+
 /*
 Copyright 2021 The Kubernetes Authors.
 
@@ -17,25 +20,30 @@ limitations under the License.
 package node
 
 import (
+	"context"
+
 	"k8s.io/kubernetes/test/e2e/cloud/gcp/common"
+	"k8s.io/kubernetes/test/e2e/feature"
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/upgrades"
 	"k8s.io/kubernetes/test/e2e/upgrades/node"
 	"k8s.io/kubernetes/test/utils/junit"
+	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 )
 
 var upgradeTests = []upgrades.Test{
 	&node.NvidiaGPUUpgradeTest{},
 }
 
-var _ = SIGDescribe("gpu Upgrade [Feature:GPUUpgrade]", func() {
+var _ = SIGDescribe("gpu Upgrade", feature.GPUUpgrade, func() {
 	f := framework.NewDefaultFramework("gpu-upgrade")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 	testFrameworks := upgrades.CreateUpgradeFrameworks(upgradeTests)
 
 	ginkgo.Describe("master upgrade", func() {
-		ginkgo.It("should NOT disrupt gpu pod [Feature:GPUMasterUpgrade]", func() {
+		f.It("should NOT disrupt gpu pod", feature.GPUMasterUpgrade, func(ctx context.Context) {
 			upgCtx, err := common.GetUpgradeContext(f.ClientSet.Discovery())
 			framework.ExpectNoError(err)
 
@@ -44,11 +52,11 @@ var _ = SIGDescribe("gpu Upgrade [Feature:GPUUpgrade]", func() {
 			testSuite.TestCases = append(testSuite.TestCases, gpuUpgradeTest)
 
 			upgradeFunc := common.ControlPlaneUpgradeFunc(f, upgCtx, gpuUpgradeTest, nil)
-			upgrades.RunUpgradeSuite(upgCtx, upgradeTests, testFrameworks, testSuite, upgrades.MasterUpgrade, upgradeFunc)
+			upgrades.RunUpgradeSuite(ctx, upgCtx, upgradeTests, testFrameworks, testSuite, upgrades.MasterUpgrade, upgradeFunc)
 		})
 	})
 	ginkgo.Describe("cluster upgrade", func() {
-		ginkgo.It("should be able to run gpu pod after upgrade [Feature:GPUClusterUpgrade]", func() {
+		f.It("should be able to run gpu pod after upgrade", feature.GPUClusterUpgrade, func(ctx context.Context) {
 			upgCtx, err := common.GetUpgradeContext(f.ClientSet.Discovery())
 			framework.ExpectNoError(err)
 
@@ -57,11 +65,11 @@ var _ = SIGDescribe("gpu Upgrade [Feature:GPUUpgrade]", func() {
 			testSuite.TestCases = append(testSuite.TestCases, gpuUpgradeTest)
 
 			upgradeFunc := common.ClusterUpgradeFunc(f, upgCtx, gpuUpgradeTest, nil, nil)
-			upgrades.RunUpgradeSuite(upgCtx, upgradeTests, testFrameworks, testSuite, upgrades.ClusterUpgrade, upgradeFunc)
+			upgrades.RunUpgradeSuite(ctx, upgCtx, upgradeTests, testFrameworks, testSuite, upgrades.ClusterUpgrade, upgradeFunc)
 		})
 	})
 	ginkgo.Describe("cluster downgrade", func() {
-		ginkgo.It("should be able to run gpu pod after downgrade [Feature:GPUClusterDowngrade]", func() {
+		f.It("should be able to run gpu pod after downgrade", feature.GPUClusterDowngrade, func(ctx context.Context) {
 			upgCtx, err := common.GetUpgradeContext(f.ClientSet.Discovery())
 			framework.ExpectNoError(err)
 
@@ -70,7 +78,7 @@ var _ = SIGDescribe("gpu Upgrade [Feature:GPUUpgrade]", func() {
 			testSuite.TestCases = append(testSuite.TestCases, gpuDowngradeTest)
 
 			upgradeFunc := common.ClusterDowngradeFunc(f, upgCtx, gpuDowngradeTest, nil, nil)
-			upgrades.RunUpgradeSuite(upgCtx, upgradeTests, testFrameworks, testSuite, upgrades.ClusterUpgrade, upgradeFunc)
+			upgrades.RunUpgradeSuite(ctx, upgCtx, upgradeTests, testFrameworks, testSuite, upgrades.ClusterUpgrade, upgradeFunc)
 		})
 	})
 })

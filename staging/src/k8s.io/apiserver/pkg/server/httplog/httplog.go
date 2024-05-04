@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/apiserver/pkg/audit"
 	"k8s.io/apiserver/pkg/endpoints/metrics"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/endpoints/responsewriter"
@@ -59,7 +60,7 @@ type respLogger struct {
 	statusRecorded bool
 	status         int
 	statusStack    string
-	// mutex is used when accessing addedInfo and addedKeyValuePairs.
+	// mutex is used when accessing addedInfo, addedKeyValuePairs and logStacktracePred.
 	// They can be modified by other goroutine when logging happens (in case of request timeout)
 	mutex              sync.Mutex
 	addedInfo          strings.Builder
@@ -95,10 +96,12 @@ func DefaultStacktracePred(status int) bool {
 	return (status < http.StatusOK || status >= http.StatusInternalServerError) && status != http.StatusSwitchingProtocols
 }
 
+const withLoggingLevel = 3
+
 // WithLogging wraps the handler with logging.
 func WithLogging(handler http.Handler, pred StacktracePred) http.Handler {
 	return withLogging(handler, pred, func() bool {
-		return klog.V(3).Enabled()
+		return klog.V(withLoggingLevel).Enabled()
 	})
 }
 
@@ -179,6 +182,8 @@ func Unlogged(req *http.Request, w http.ResponseWriter) http.ResponseWriter {
 // StacktraceWhen sets the stacktrace logging predicate, which decides when to log a stacktrace.
 // There's a default, so you don't need to call this unless you don't like the default.
 func (rl *respLogger) StacktraceWhen(pred StacktracePred) *respLogger {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
 	rl.logStacktracePred = pred
 	return rl
 }
@@ -200,7 +205,6 @@ func StatusIsNot(statuses ...int) StacktracePred {
 func (rl *respLogger) Addf(format string, data ...interface{}) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
-	rl.addedInfo.WriteString("\n")
 	rl.addedInfo.WriteString(fmt.Sprintf(format, data...))
 }
 
@@ -237,17 +241,8 @@ func SetStacktracePredicate(ctx context.Context, pred StacktracePred) {
 // Log is intended to be called once at the end of your request handler, via defer
 func (rl *respLogger) Log() {
 	latency := time.Since(rl.startTime)
-	auditID := request.GetAuditIDTruncated(rl.req)
-
-	verb := rl.req.Method
-	if requestInfo, ok := request.RequestInfoFrom(rl.req.Context()); ok {
-		// If we can find a requestInfo, we can get a scope, and then
-		// we can convert GETs to LISTs when needed.
-		scope := metrics.CleanScope(requestInfo)
-		verb = metrics.CanonicalVerb(strings.ToUpper(verb), scope)
-	}
-	// mark APPLY requests and WATCH requests correctly.
-	verb = metrics.CleanVerb(verb, rl.req)
+	auditID := audit.GetAuditIDTruncated(rl.req.Context())
+	verb := metrics.NormalizedVerb(rl.req)
 
 	keysAndValues := []interface{}{
 		"verb", verb,
@@ -280,7 +275,7 @@ func (rl *respLogger) Log() {
 		}
 	}
 
-	klog.InfoSDepth(1, "HTTP", keysAndValues...)
+	klog.V(withLoggingLevel).InfoSDepth(1, "HTTP", keysAndValues...)
 }
 
 // Header implements http.ResponseWriter.
@@ -314,6 +309,8 @@ func (rl *respLogger) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 func (rl *respLogger) recordStatus(status int) {
+	rl.mutex.Lock()
+	defer rl.mutex.Unlock()
 	rl.status = status
 	rl.statusRecorded = true
 	if rl.logStacktracePred(status) {

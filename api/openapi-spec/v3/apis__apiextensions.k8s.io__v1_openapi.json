@@ -45,12 +45,16 @@
         "properties": {
           "strategy": {
             "default": "",
-            "description": "strategy specifies how custom resources are converted between versions. Allowed values are: - `None`: The converter only change the apiVersion and would not touch any other field in the custom resource. - `Webhook`: API Server will call to an external webhook to do the conversion. Additional information\n  is needed for this option. This requires spec.preserveUnknownFields to be false, and spec.conversion.webhook to be set.",
+            "description": "strategy specifies how custom resources are converted between versions. Allowed values are: - `\"None\"`: The converter only change the apiVersion and would not touch any other field in the custom resource. - `\"Webhook\"`: API Server will call to an external webhook to do the conversion. Additional information\n  is needed for this option. This requires spec.preserveUnknownFields to be false, and spec.conversion.webhook to be set.",
             "type": "string"
           },
           "webhook": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.WebhookConversion",
-            "description": "webhook describes how to call the conversion webhook. Required when `strategy` is set to `Webhook`."
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.WebhookConversion"
+              }
+            ],
+            "description": "webhook describes how to call the conversion webhook. Required when `strategy` is set to `\"Webhook\"`."
           }
         },
         "required": [
@@ -70,17 +74,29 @@
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"
+              }
+            ],
             "default": {},
             "description": "Standard object's metadata More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           },
           "spec": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionSpec",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionSpec"
+              }
+            ],
             "default": {},
             "description": "spec describes how the user wants the resources to appear"
           },
           "status": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionStatus",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionStatus"
+              }
+            ],
             "default": {},
             "description": "status indicates the actual state of the CustomResourceDefinition"
           }
@@ -101,8 +117,11 @@
         "description": "CustomResourceDefinitionCondition contains details for the current condition of this pod.",
         "properties": {
           "lastTransitionTime": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
+              }
+            ],
             "description": "lastTransitionTime last time the condition transitioned from one status to another."
           },
           "message": {
@@ -140,7 +159,11 @@
           "items": {
             "description": "items list individual CustomResourceDefinition objects",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition"
+                }
+              ],
               "default": {}
             },
             "type": "array"
@@ -150,7 +173,11 @@
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
+              }
+            ],
             "default": {},
             "description": "Standard object's metadata More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           }
@@ -176,7 +203,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "kind": {
             "default": "",
@@ -198,7 +226,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "singular": {
             "description": "singular is the singular name of the resource. It must be all lowercase. Defaults to lowercased `kind`.",
@@ -215,7 +244,11 @@
         "description": "CustomResourceDefinitionSpec describes how a user wants their resource to appear",
         "properties": {
           "conversion": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceConversion",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceConversion"
+              }
+            ],
             "description": "conversion defines conversion settings for the CRD."
           },
           "group": {
@@ -224,12 +257,16 @@
             "type": "string"
           },
           "names": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionNames",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionNames"
+              }
+            ],
             "default": {},
             "description": "names specify the resource and kind names for the custom resource."
           },
           "preserveUnknownFields": {
-            "description": "preserveUnknownFields indicates that object fields which are not specified in the OpenAPI schema should be preserved when persisting to storage. apiVersion, kind, metadata and known fields inside metadata are always preserved. This field is deprecated in favor of setting `x-preserve-unknown-fields` to true in `spec.versions[*].schema.openAPIV3Schema`. See https://kubernetes.io/docs/tasks/access-kubernetes-api/custom-resources/custom-resource-definitions/#pruning-versus-preserving-unknown-fields for details.",
+            "description": "preserveUnknownFields indicates that object fields which are not specified in the OpenAPI schema should be preserved when persisting to storage. apiVersion, kind, metadata and known fields inside metadata are always preserved. This field is deprecated in favor of setting `x-preserve-unknown-fields` to true in `spec.versions[*].schema.openAPIV3Schema`. See https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#field-pruning for details.",
             "type": "boolean"
           },
           "scope": {
@@ -240,10 +277,15 @@
           "versions": {
             "description": "versions is the list of all API versions of the defined custom resource. Version names are used to compute the order in which served versions are listed in API discovery. If the version string is \"kube-like\", it will sort above non \"kube-like\" version strings, which are ordered lexicographically. \"Kube-like\" versions start with a \"v\", then are followed by a number (the major version), then optionally the string \"alpha\" or \"beta\" and another number (the minor version). These are sorted first by GA > beta > alpha (where GA is a version with no suffix such as beta or alpha), and then by comparing major version, then minor version. An example sorted list of versions: v10, v2, v1, v11beta2, v10beta3, v3beta1, v12alpha1, v11alpha2, foo1, foo10.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionVersion",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionVersion"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           }
         },
         "required": [
@@ -258,14 +300,22 @@
         "description": "CustomResourceDefinitionStatus indicates the state of the CustomResourceDefinition",
         "properties": {
           "acceptedNames": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionNames",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionNames"
+              }
+            ],
             "default": {},
             "description": "acceptedNames are the names that are actually being used to serve discovery. They may be different than the names in spec."
           },
           "conditions": {
             "description": "conditions indicate state for particular aspects of a CustomResourceDefinition",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionCondition",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinitionCondition"
+                }
+              ],
               "default": {}
             },
             "type": "array",
@@ -280,7 +330,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           }
         },
         "type": "object"
@@ -291,10 +342,15 @@
           "additionalPrinterColumns": {
             "description": "additionalPrinterColumns specifies additional columns returned in Table output. See https://kubernetes.io/docs/reference/using-api/api-concepts/#receiving-resources-as-tables for details. If no columns are specified, a single column displaying the age of the custom resource is used.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceColumnDefinition",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceColumnDefinition"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "deprecated": {
             "description": "deprecated indicates this version of the custom resource API is deprecated. When set to true, API requests to this version receive a warning header in the server response. Defaults to false.",
@@ -310,8 +366,25 @@
             "type": "string"
           },
           "schema": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceValidation",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceValidation"
+              }
+            ],
             "description": "schema describes the schema used for validation, pruning, and defaulting of this version of the custom resource."
+          },
+          "selectableFields": {
+            "description": "selectableFields specifies paths to fields that may be used as field selectors. A maximum of 8 selectable fields are allowed. See https://kubernetes.io/docs/concepts/overview/working-with-objects/field-selectors",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.SelectableField"
+                }
+              ],
+              "default": {}
+            },
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "served": {
             "default": false,
@@ -324,7 +397,11 @@
             "type": "boolean"
           },
           "subresources": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresources",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresources"
+              }
+            ],
             "description": "subresources specify what subresources this version of the defined custom resource have."
           }
         },
@@ -367,11 +444,19 @@
         "description": "CustomResourceSubresources defines the status and scale subresources for CustomResources.",
         "properties": {
           "scale": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresourceScale",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresourceScale"
+              }
+            ],
             "description": "scale indicates the custom resource should serve a `/scale` subresource that returns an `autoscaling/v1` Scale object."
           },
           "status": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresourceStatus",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresourceStatus"
+              }
+            ],
             "description": "status indicates the custom resource should serve a `/status` subresource. When enabled: 1. requests to the custom resource primary endpoint ignore changes to the `status` stanza of the object. 2. requests to the custom resource `/status` subresource ignore changes to anything other than the `status` stanza of the object."
           }
         },
@@ -381,7 +466,11 @@
         "description": "CustomResourceValidation is a list of validation methods for CustomResources.",
         "properties": {
           "openAPIV3Schema": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+              }
+            ],
             "description": "openAPIV3Schema is the OpenAPI v3 schema to use for validation and pruning."
           }
         },
@@ -419,33 +508,50 @@
           },
           "allOf": {
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "anyOf": {
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "default": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON"
+              }
+            ],
             "description": "default is a default value for undefined object fields. Defaulting is a beta feature under the CustomResourceDefaulting feature gate. Defaulting requires spec.preserveUnknownFields to be false."
           },
           "definitions": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+                }
+              ],
               "default": {}
             },
             "type": "object"
           },
           "dependencies": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrStringArray",
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrStringArray"
             },
             "type": "object"
           },
@@ -454,10 +560,10 @@
           },
           "enum": {
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON",
-              "default": {}
+              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "example": {
             "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSON"
@@ -525,24 +631,37 @@
           },
           "oneOf": {
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "pattern": {
             "type": "string"
           },
           "patternProperties": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+                }
+              ],
               "default": {}
             },
             "type": "object"
           },
           "properties": {
             "additionalProperties": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps"
+                }
+              ],
               "default": {}
             },
             "type": "object"
@@ -552,7 +671,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "title": {
             "type": "string"
@@ -577,7 +697,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "x-kubernetes-list-type": {
             "description": "x-kubernetes-list-type annotates an array to further describe its topology. This extension must only be used on lists and may have 3 possible values:\n\n1) `atomic`: the list is treated as a single entity, like a scalar.\n     Atomic lists will be entirely replaced when updated. This extension\n     may be used on any type of list (struct, scalar, ...).\n2) `set`:\n     Sets are lists that must not have multiple items with the same value. Each\n     value must be a scalar, an object with x-kubernetes-map-type `atomic` or an\n     array with x-kubernetes-list-type `atomic`.\n3) `map`:\n     These lists are like maps in that their elements have a non-index key\n     used to identify them. Order is preserved upon merge. The map tag\n     must only be used on a list with elements of type object.\nDefaults to atomic for arrays.",
@@ -594,7 +715,11 @@
           "x-kubernetes-validations": {
             "description": "x-kubernetes-validations describes a list of validation rules written in the CEL expression language. This field is an alpha-level. Using this field requires the feature gate `CustomResourceValidationExpressions` to be enabled.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.ValidationRule",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.ValidationRule"
+                }
+              ],
               "default": {}
             },
             "type": "array",
@@ -616,6 +741,20 @@
       },
       "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaPropsOrStringArray": {
         "description": "JSONSchemaPropsOrStringArray represents a JSONSchemaProps or a string array."
+      },
+      "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.SelectableField": {
+        "description": "SelectableField specifies the JSON path of a field that may be used with field selectors.",
+        "properties": {
+          "jsonPath": {
+            "default": "",
+            "description": "jsonPath is a simple JSON path which is evaluated against each custom resource to produce a field selector value. Only JSON paths without the array notation are allowed. Must point to a field of type string, boolean or integer. Types with enum values and strings with formats are allowed. If jsonPath refers to absent field in a resource, the jsonPath evaluates to an empty string. Must not point to metdata fields. Required.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "jsonPath"
+        ],
+        "type": "object"
       },
       "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.ServiceReference": {
         "description": "ServiceReference holds a reference to Service.legacy.k8s.io",
@@ -649,13 +788,29 @@
       "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.ValidationRule": {
         "description": "ValidationRule describes a validation rule written in the CEL expression language.",
         "properties": {
+          "fieldPath": {
+            "description": "fieldPath represents the field path returned when the validation fails. It must be a relative JSON path (i.e. with array notation) scoped to the location of this x-kubernetes-validations extension in the schema and refer to an existing field. e.g. when validation checks if a specific attribute `foo` under a map `testMap`, the fieldPath could be set to `.testMap.foo` If the validation checks two lists must have unique attributes, the fieldPath could be set to either of the list: e.g. `.testList` It does not support list numeric index. It supports child operation to refer to an existing field currently. Refer to [JSONPath support in Kubernetes](https://kubernetes.io/docs/reference/kubectl/jsonpath/) for more info. Numeric index of array is not supported. For field name which contains special characters, use `['specialName']` to refer the field name. e.g. for attribute `foo.34$` appears in a list `testList`, the fieldPath could be set to `.testList['foo.34$']`",
+            "type": "string"
+          },
           "message": {
             "description": "Message represents the message displayed when validation fails. The message is required if the Rule contains line breaks. The message must not contain line breaks. If unset, the message is \"failed rule: {Rule}\". e.g. \"must be a URL with the host matching spec.host\"",
             "type": "string"
           },
+          "messageExpression": {
+            "description": "MessageExpression declares a CEL expression that evaluates to the validation failure message that is returned when this rule fails. Since messageExpression is used as a failure message, it must evaluate to a string. If both message and messageExpression are present on a rule, then messageExpression will be used if validation fails. If messageExpression results in a runtime error, the runtime error is logged, and the validation failure message is produced as if the messageExpression field were unset. If messageExpression evaluates to an empty string, a string with only spaces, or a string that contains line breaks, then the validation failure message will also be produced as if the messageExpression field were unset, and the fact that messageExpression produced an empty string/string with only spaces/string with line breaks will be logged. messageExpression has access to all the same variables as the rule; the only difference is the return type. Example: \"x must be less than max (\"+string(self.max)+\")\"",
+            "type": "string"
+          },
+          "optionalOldSelf": {
+            "description": "optionalOldSelf is used to opt a transition rule into evaluation even when the object is first created, or if the old object is missing the value.\n\nWhen enabled `oldSelf` will be a CEL optional whose value will be `None` if there is no old value, or when the object is initially created.\n\nYou may check for presence of oldSelf using `oldSelf.hasValue()` and unwrap it after checking using `oldSelf.value()`. Check the CEL documentation for Optional types for more information: https://pkg.go.dev/github.com/google/cel-go/cel#OptionalTypes\n\nMay not be set unless `oldSelf` is used in `rule`.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "reason provides a machine-readable validation failure reason that is returned to the caller when a request fails this validation rule. The HTTP status code returned to the caller will match the reason of the reason of the first failed validation rule. The currently supported reasons are: \"FieldValueInvalid\", \"FieldValueForbidden\", \"FieldValueRequired\", \"FieldValueDuplicate\". If not set, default to use \"FieldValueInvalid\". All future added reasons must be accepted by clients when reading this value and unknown reasons should be treated as FieldValueInvalid.",
+            "type": "string"
+          },
           "rule": {
             "default": "",
-            "description": "Rule represents the expression which will be evaluated by CEL. ref: https://github.com/google/cel-spec The Rule is scoped to the location of the x-kubernetes-validations extension in the schema. The `self` variable in the CEL expression is bound to the scoped value. Example: - Rule scoped to the root of a resource with a status subresource: {\"rule\": \"self.status.actual <= self.spec.maxDesired\"}\n\nIf the Rule is scoped to an object with properties, the accessible properties of the object are field selectable via `self.field` and field presence can be checked via `has(self.field)`. Null valued fields are treated as absent fields in CEL expressions. If the Rule is scoped to an object with additionalProperties (i.e. a map) the value of the map are accessible via `self[mapKey]`, map containment can be checked via `mapKey in self` and all entries of the map are accessible via CEL macros and functions such as `self.all(...)`. If the Rule is scoped to an array, the elements of the array are accessible via `self[i]` and also by macros and functions. If the Rule is scoped to a scalar, `self` is bound to the scalar value. Examples: - Rule scoped to a map of objects: {\"rule\": \"self.components['Widget'].priority < 10\"} - Rule scoped to a list of integers: {\"rule\": \"self.values.all(value, value >= 0 && value < 100)\"} - Rule scoped to a string value: {\"rule\": \"self.startsWith('kube')\"}\n\nThe `apiVersion`, `kind`, `metadata.name` and `metadata.generateName` are always accessible from the root of the object and from any x-kubernetes-embedded-resource annotated objects. No other metadata properties are accessible.\n\nUnknown data preserved in custom resources via x-kubernetes-preserve-unknown-fields is not accessible in CEL expressions. This includes: - Unknown field values that are preserved by object schemas with x-kubernetes-preserve-unknown-fields. - Object properties where the property schema is of an \"unknown type\". An \"unknown type\" is recursively defined as:\n  - A schema with no type and x-kubernetes-preserve-unknown-fields set to true\n  - An array where the items schema is of an \"unknown type\"\n  - An object where the additionalProperties schema is of an \"unknown type\"\n\nOnly property names of the form `[a-zA-Z_.-/][a-zA-Z0-9_.-/]*` are accessible. Accessible property names are escaped according to the following rules when accessed in the expression: - '__' escapes to '__underscores__' - '.' escapes to '__dot__' - '-' escapes to '__dash__' - '/' escapes to '__slash__' - Property names that exactly match a CEL RESERVED keyword escape to '__{keyword}__'. The keywords are:\n\t  \"true\", \"false\", \"null\", \"in\", \"as\", \"break\", \"const\", \"continue\", \"else\", \"for\", \"function\", \"if\",\n\t  \"import\", \"let\", \"loop\", \"package\", \"namespace\", \"return\".\nExamples:\n  - Rule accessing a property named \"namespace\": {\"rule\": \"self.__namespace__ > 0\"}\n  - Rule accessing a property named \"x-prop\": {\"rule\": \"self.x__dash__prop > 0\"}\n  - Rule accessing a property named \"redact__d\": {\"rule\": \"self.redact__underscores__d > 0\"}\n\nEquality on arrays with x-kubernetes-list-type of 'set' or 'map' ignores element order, i.e. [1, 2] == [2, 1]. Concatenation on arrays with x-kubernetes-list-type use the semantics of the list type:\n  - 'set': `X + Y` performs a union where the array positions of all elements in `X` are preserved and\n    non-intersecting elements in `Y` are appended, retaining their partial order.\n  - 'map': `X + Y` performs a merge where the array positions of all keys in `X` are preserved but the values\n    are overwritten by values in `Y` when the key sets of `X` and `Y` intersect. Elements in `Y` with\n    non-intersecting keys are appended, retaining their partial order.",
+            "description": "Rule represents the expression which will be evaluated by CEL. ref: https://github.com/google/cel-spec The Rule is scoped to the location of the x-kubernetes-validations extension in the schema. The `self` variable in the CEL expression is bound to the scoped value. Example: - Rule scoped to the root of a resource with a status subresource: {\"rule\": \"self.status.actual <= self.spec.maxDesired\"}\n\nIf the Rule is scoped to an object with properties, the accessible properties of the object are field selectable via `self.field` and field presence can be checked via `has(self.field)`. Null valued fields are treated as absent fields in CEL expressions. If the Rule is scoped to an object with additionalProperties (i.e. a map) the value of the map are accessible via `self[mapKey]`, map containment can be checked via `mapKey in self` and all entries of the map are accessible via CEL macros and functions such as `self.all(...)`. If the Rule is scoped to an array, the elements of the array are accessible via `self[i]` and also by macros and functions. If the Rule is scoped to a scalar, `self` is bound to the scalar value. Examples: - Rule scoped to a map of objects: {\"rule\": \"self.components['Widget'].priority < 10\"} - Rule scoped to a list of integers: {\"rule\": \"self.values.all(value, value >= 0 && value < 100)\"} - Rule scoped to a string value: {\"rule\": \"self.startsWith('kube')\"}\n\nThe `apiVersion`, `kind`, `metadata.name` and `metadata.generateName` are always accessible from the root of the object and from any x-kubernetes-embedded-resource annotated objects. No other metadata properties are accessible.\n\nUnknown data preserved in custom resources via x-kubernetes-preserve-unknown-fields is not accessible in CEL expressions. This includes: - Unknown field values that are preserved by object schemas with x-kubernetes-preserve-unknown-fields. - Object properties where the property schema is of an \"unknown type\". An \"unknown type\" is recursively defined as:\n  - A schema with no type and x-kubernetes-preserve-unknown-fields set to true\n  - An array where the items schema is of an \"unknown type\"\n  - An object where the additionalProperties schema is of an \"unknown type\"\n\nOnly property names of the form `[a-zA-Z_.-/][a-zA-Z0-9_.-/]*` are accessible. Accessible property names are escaped according to the following rules when accessed in the expression: - '__' escapes to '__underscores__' - '.' escapes to '__dot__' - '-' escapes to '__dash__' - '/' escapes to '__slash__' - Property names that exactly match a CEL RESERVED keyword escape to '__{keyword}__'. The keywords are:\n\t  \"true\", \"false\", \"null\", \"in\", \"as\", \"break\", \"const\", \"continue\", \"else\", \"for\", \"function\", \"if\",\n\t  \"import\", \"let\", \"loop\", \"package\", \"namespace\", \"return\".\nExamples:\n  - Rule accessing a property named \"namespace\": {\"rule\": \"self.__namespace__ > 0\"}\n  - Rule accessing a property named \"x-prop\": {\"rule\": \"self.x__dash__prop > 0\"}\n  - Rule accessing a property named \"redact__d\": {\"rule\": \"self.redact__underscores__d > 0\"}\n\nEquality on arrays with x-kubernetes-list-type of 'set' or 'map' ignores element order, i.e. [1, 2] == [2, 1]. Concatenation on arrays with x-kubernetes-list-type use the semantics of the list type:\n  - 'set': `X + Y` performs a union where the array positions of all elements in `X` are preserved and\n    non-intersecting elements in `Y` are appended, retaining their partial order.\n  - 'map': `X + Y` performs a merge where the array positions of all keys in `X` are preserved but the values\n    are overwritten by values in `Y` when the key sets of `X` and `Y` intersect. Elements in `Y` with\n    non-intersecting keys are appended, retaining their partial order.\n\nIf `rule` makes use of the `oldSelf` variable it is implicitly a `transition rule`.\n\nBy default, the `oldSelf` variable is the same type as `self`. When `optionalOldSelf` is true, the `oldSelf` variable is a CEL optional\n variable whose value() is the same type as `self`.\nSee the documentation for the `optionalOldSelf` field for details.\n\nTransition rules by default are applied only on UPDATE requests and are skipped if an old value could not be found. You can opt a transition rule into unconditional evaluation by setting `optionalOldSelf` to true.",
             "type": "string"
           }
         },
@@ -673,7 +828,11 @@
             "type": "string"
           },
           "service": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.ServiceReference",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.ServiceReference"
+              }
+            ],
             "description": "service is a reference to the service for this webhook. Either service or url must be specified.\n\nIf the webhook is running within the cluster, then you should use `service`."
           },
           "url": {
@@ -687,7 +846,11 @@
         "description": "WebhookConversion describes how to call a conversion webhook",
         "properties": {
           "clientConfig": {
-            "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.WebhookClientConfig",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.WebhookClientConfig"
+              }
+            ],
             "description": "clientConfig is the instructions for how to call the webhook if strategy is `Webhook`."
           },
           "conversionReviewVersions": {
@@ -696,7 +859,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           }
         },
         "required": [
@@ -713,7 +877,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "group": {
             "description": "group is the preferred group of the resource.  Empty implies the group of the containing resource list. For subresources, this may have a different value, for example: Scale\".",
@@ -740,7 +905,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "singularName": {
             "default": "",
@@ -792,10 +958,15 @@
           "resources": {
             "description": "resources contains the name of the resources and if they are namespaced.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.APIResource",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.APIResource"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           }
         },
         "required": [
@@ -824,7 +995,8 @@
               "default": "",
               "type": "string"
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "gracePeriodSeconds": {
             "description": "The duration in seconds before the object should be deleted. Value must be non-negative integer. The value zero indicates delete immediately. If this value is nil, the default grace period for the specified type will be used. Defaults to a per object value if not specified. zero means delete immediately.",
@@ -840,7 +1012,11 @@
             "type": "boolean"
           },
           "preconditions": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Preconditions",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Preconditions"
+              }
+            ],
             "description": "Must be fulfilled before a deletion is carried out. If not possible, a 409 Conflict status will be returned."
           },
           "propagationPolicy": {
@@ -869,6 +1045,11 @@
             "group": "admissionregistration.k8s.io",
             "kind": "DeleteOptions",
             "version": "v1"
+          },
+          {
+            "group": "admissionregistration.k8s.io",
+            "kind": "DeleteOptions",
+            "version": "v1alpha1"
           },
           {
             "group": "admissionregistration.k8s.io",
@@ -914,6 +1095,11 @@
             "group": "authentication.k8s.io",
             "kind": "DeleteOptions",
             "version": "v1"
+          },
+          {
+            "group": "authentication.k8s.io",
+            "kind": "DeleteOptions",
+            "version": "v1alpha1"
           },
           {
             "group": "authentication.k8s.io",
@@ -968,6 +1154,11 @@
           {
             "group": "certificates.k8s.io",
             "kind": "DeleteOptions",
+            "version": "v1alpha1"
+          },
+          {
+            "group": "certificates.k8s.io",
+            "kind": "DeleteOptions",
             "version": "v1beta1"
           },
           {
@@ -1008,7 +1199,7 @@
           {
             "group": "flowcontrol.apiserver.k8s.io",
             "kind": "DeleteOptions",
-            "version": "v1alpha1"
+            "version": "v1"
           },
           {
             "group": "flowcontrol.apiserver.k8s.io",
@@ -1019,6 +1210,11 @@
             "group": "flowcontrol.apiserver.k8s.io",
             "kind": "DeleteOptions",
             "version": "v1beta2"
+          },
+          {
+            "group": "flowcontrol.apiserver.k8s.io",
+            "kind": "DeleteOptions",
+            "version": "v1beta3"
           },
           {
             "group": "imagepolicy.k8s.io",
@@ -1038,6 +1234,11 @@
           {
             "group": "networking.k8s.io",
             "kind": "DeleteOptions",
+            "version": "v1alpha1"
+          },
+          {
+            "group": "networking.k8s.io",
+            "kind": "DeleteOptions",
             "version": "v1beta1"
           },
           {
@@ -1081,6 +1282,11 @@
             "version": "v1beta1"
           },
           {
+            "group": "resource.k8s.io",
+            "kind": "DeleteOptions",
+            "version": "v1alpha2"
+          },
+          {
             "group": "scheduling.k8s.io",
             "kind": "DeleteOptions",
             "version": "v1"
@@ -1109,6 +1315,11 @@
             "group": "storage.k8s.io",
             "kind": "DeleteOptions",
             "version": "v1beta1"
+          },
+          {
+            "group": "storagemigration.k8s.io",
+            "kind": "DeleteOptions",
+            "version": "v1alpha1"
           }
         ]
       },
@@ -1133,7 +1344,7 @@
             "type": "string"
           },
           "selfLink": {
-            "description": "selfLink is a URL representing this object. Populated by the system. Read-only.\n\nDEPRECATED Kubernetes will stop propagating this field in 1.20 release and the field is planned to be removed in 1.21 release.",
+            "description": "Deprecated: selfLink is a legacy read-only field that is no longer populated by the system.",
             "type": "string"
           }
         },
@@ -1151,7 +1362,11 @@
             "type": "string"
           },
           "fieldsV1": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1"
+              }
+            ],
             "description": "FieldsV1 holds the first JSON version format as described in the \"FieldsV1\" type."
           },
           "manager": {
@@ -1167,8 +1382,12 @@
             "type": "string"
           },
           "time": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "description": "Time is timestamp of when these fields were set. It should always be empty if Operation is 'Apply'"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
+              }
+            ],
+            "description": "Time is the timestamp of when the ManagedFields entry was added. The timestamp will also be updated if a field is added, the manager changes any of the owned fields value or removes a field. The timestamp does not update when a field is removed from the entry because another manager took it over."
           }
         },
         "type": "object"
@@ -1181,16 +1400,15 @@
               "default": "",
               "type": "string"
             },
-            "description": "Annotations is an unstructured key value map stored with a resource that may be set by external tools to store and retrieve arbitrary metadata. They are not queryable and should be preserved when modifying objects. More info: http://kubernetes.io/docs/user-guide/annotations",
+            "description": "Annotations is an unstructured key value map stored with a resource that may be set by external tools to store and retrieve arbitrary metadata. They are not queryable and should be preserved when modifying objects. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations",
             "type": "object"
           },
-          "clusterName": {
-            "description": "The name of the cluster which the object belongs to. This is used to distinguish resources with same name and namespace in different clusters. This field is not set anywhere right now and apiserver is going to ignore it if set in create or update request.",
-            "type": "string"
-          },
           "creationTimestamp": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
+              }
+            ],
             "description": "CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC.\n\nPopulated by the system. Read-only. Null for lists. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           },
           "deletionGracePeriodSeconds": {
@@ -1199,7 +1417,11 @@
             "type": "integer"
           },
           "deletionTimestamp": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Time"
+              }
+            ],
             "description": "DeletionTimestamp is RFC 3339 date and time at which this resource will be deleted. This field is set by the server when a graceful deletion is requested by the user, and is not directly settable by a client. The resource is expected to be deleted (no longer visible from resource lists, and not reachable by name) after the time in this field, once the finalizers list is empty. As long as the finalizers list contains items, deletion is blocked. Once the deletionTimestamp is set, this value may not be unset or be set further into the future, although it may be shortened or the resource may be deleted prior to this time. For example, a user may request that a pod is deleted in 30 seconds. The Kubelet will react by sending a graceful termination signal to the containers in the pod. After that 30 seconds, the Kubelet will send a hard termination signal (SIGKILL) to the container and after cleanup, remove the pod from the API. In the presence of network partitions, this object may still exist after this timestamp, until an administrator or automated process can determine the resource is fully terminated. If not set, graceful deletion of the object has not been requested.\n\nPopulated by the system when a graceful deletion is requested. Read-only. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
           },
           "finalizers": {
@@ -1209,10 +1431,11 @@
               "type": "string"
             },
             "type": "array",
+            "x-kubernetes-list-type": "set",
             "x-kubernetes-patch-strategy": "merge"
           },
           "generateName": {
-            "description": "GenerateName is an optional prefix, used by the server, to generate a unique name ONLY IF the Name field has not been provided. If this field is used, the name returned to the client will be different than the name passed. This value will also be combined with a unique suffix. The provided value has the same validation rules as the Name field, and may be truncated by the length of the suffix required to make the value unique on the server.\n\nIf this field is specified and the generated name exists, the server will NOT return a 409 - instead, it will either return 201 Created or 500 with Reason ServerTimeout indicating a unique name could not be found in the time allotted, and the client should retry (optionally after the time indicated in the Retry-After header).\n\nApplied only if Name is not specified. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#idempotency",
+            "description": "GenerateName is an optional prefix, used by the server, to generate a unique name ONLY IF the Name field has not been provided. If this field is used, the name returned to the client will be different than the name passed. This value will also be combined with a unique suffix. The provided value has the same validation rules as the Name field, and may be truncated by the length of the suffix required to make the value unique on the server.\n\nIf this field is specified and the generated name exists, the server will return a 409.\n\nApplied only if Name is not specified. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#idempotency",
             "type": "string"
           },
           "generation": {
@@ -1225,32 +1448,45 @@
               "default": "",
               "type": "string"
             },
-            "description": "Map of string keys and values that can be used to organize and categorize (scope and select) objects. May match selectors of replication controllers and services. More info: http://kubernetes.io/docs/user-guide/labels",
+            "description": "Map of string keys and values that can be used to organize and categorize (scope and select) objects. May match selectors of replication controllers and services. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels",
             "type": "object"
           },
           "managedFields": {
             "description": "ManagedFields maps workflow-id and version to the set of fields that are managed by that workflow. This is mostly for internal housekeeping, and users typically shouldn't need to set or understand this field. A workflow can be the user's name, a controller's name, or the name of a specific apply path like \"ci-cd\". The set of fields is always in the version that the workflow used when modifying the object.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ManagedFieldsEntry"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "name": {
-            "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+            "description": "Name must be unique within a namespace. Is required when creating resources, although some resources may allow a client to request the generation of an appropriate name automatically. Name is primarily intended for creation idempotence and configuration definition. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
             "type": "string"
           },
           "namespace": {
-            "description": "Namespace defines the space within which each name must be unique. An empty namespace is equivalent to the \"default\" namespace, but \"default\" is the canonical representation. Not all objects are required to be scoped to a namespace - the value of this field for those objects will be empty.\n\nMust be a DNS_LABEL. Cannot be updated. More info: http://kubernetes.io/docs/user-guide/namespaces",
+            "description": "Namespace defines the space within which each name must be unique. An empty namespace is equivalent to the \"default\" namespace, but \"default\" is the canonical representation. Not all objects are required to be scoped to a namespace - the value of this field for those objects will be empty.\n\nMust be a DNS_LABEL. Cannot be updated. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces",
             "type": "string"
           },
           "ownerReferences": {
             "description": "List of objects depended by this object. If ALL objects in the list have been deleted, this object will be garbage collected. If this object is managed by a controller, then an entry in this list will point to this controller, with the controller field set to true. There cannot be more than one managing controller.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.OwnerReference"
+                }
+              ],
               "default": {}
             },
             "type": "array",
+            "x-kubernetes-list-map-keys": [
+              "uid"
+            ],
+            "x-kubernetes-list-type": "map",
             "x-kubernetes-patch-merge-key": "uid",
             "x-kubernetes-patch-strategy": "merge"
           },
@@ -1259,11 +1495,11 @@
             "type": "string"
           },
           "selfLink": {
-            "description": "SelfLink is a URL representing this object. Populated by the system. Read-only.\n\nDEPRECATED Kubernetes will stop propagating this field in 1.20 release and the field is planned to be removed in 1.21 release.",
+            "description": "Deprecated: selfLink is a legacy read-only field that is no longer populated by the system.",
             "type": "string"
           },
           "uid": {
-            "description": "UID is the unique in time and space value for this object. It is typically generated by the server on successful creation of a resource and is not allowed to change on PUT operations.\n\nPopulated by the system. Read-only. More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+            "description": "UID is the unique in time and space value for this object. It is typically generated by the server on successful creation of a resource and is not allowed to change on PUT operations.\n\nPopulated by the system. Read-only. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
             "type": "string"
           }
         },
@@ -1292,12 +1528,12 @@
           },
           "name": {
             "default": "",
-            "description": "Name of the referent. More info: http://kubernetes.io/docs/user-guide/identifiers#names",
+            "description": "Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names",
             "type": "string"
           },
           "uid": {
             "default": "",
-            "description": "UID of the referent. More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+            "description": "UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
             "type": "string"
           }
         },
@@ -1341,8 +1577,13 @@
             "type": "integer"
           },
           "details": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.StatusDetails",
-            "description": "Extended data associated with the reason.  Each reason may define its own extended details. This field is optional and the data returned is not guaranteed to conform to any schema except that defined by the reason type."
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.StatusDetails"
+              }
+            ],
+            "description": "Extended data associated with the reason.  Each reason may define its own extended details. This field is optional and the data returned is not guaranteed to conform to any schema except that defined by the reason type.",
+            "x-kubernetes-list-type": "atomic"
           },
           "kind": {
             "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
@@ -1353,7 +1594,11 @@
             "type": "string"
           },
           "metadata": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta"
+              }
+            ],
             "default": {},
             "description": "Standard list metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds"
           },
@@ -1372,6 +1617,11 @@
             "group": "",
             "kind": "Status",
             "version": "v1"
+          },
+          {
+            "group": "resource.k8s.io",
+            "kind": "Status",
+            "version": "v1alpha2"
           }
         ]
       },
@@ -1399,10 +1649,15 @@
           "causes": {
             "description": "The Causes array includes more details associated with the StatusReason failure. Not all StatusReasons may provide detailed causes.",
             "items": {
-              "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.StatusCause",
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.StatusCause"
+                }
+              ],
               "default": {}
             },
-            "type": "array"
+            "type": "array",
+            "x-kubernetes-list-type": "atomic"
           },
           "group": {
             "description": "The group attribute of the resource associated with the status StatusReason.",
@@ -1422,7 +1677,7 @@
             "type": "integer"
           },
           "uid": {
-            "description": "UID of the resource. (when there is a single resource which can be described). More info: http://kubernetes.io/docs/user-guide/identifiers#uids",
+            "description": "UID of the resource. (when there is a single resource which can be described). More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#uids",
             "type": "string"
           }
         },
@@ -1437,8 +1692,11 @@
         "description": "Event represents a single event to a watched resource.",
         "properties": {
           "object": {
-            "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.runtime.RawExtension",
-            "default": {},
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.runtime.RawExtension"
+              }
+            ],
             "description": "Object is:\n * If Type is Added or Modified: the new state of the object.\n * If Type is Deleted: the state of the object immediately before deletion.\n * If Type is Error: *Status is recommended; other types may make sense\n   depending on context."
           },
           "type": {
@@ -1471,6 +1729,11 @@
             "group": "admissionregistration.k8s.io",
             "kind": "WatchEvent",
             "version": "v1"
+          },
+          {
+            "group": "admissionregistration.k8s.io",
+            "kind": "WatchEvent",
+            "version": "v1alpha1"
           },
           {
             "group": "admissionregistration.k8s.io",
@@ -1516,6 +1779,11 @@
             "group": "authentication.k8s.io",
             "kind": "WatchEvent",
             "version": "v1"
+          },
+          {
+            "group": "authentication.k8s.io",
+            "kind": "WatchEvent",
+            "version": "v1alpha1"
           },
           {
             "group": "authentication.k8s.io",
@@ -1570,6 +1838,11 @@
           {
             "group": "certificates.k8s.io",
             "kind": "WatchEvent",
+            "version": "v1alpha1"
+          },
+          {
+            "group": "certificates.k8s.io",
+            "kind": "WatchEvent",
             "version": "v1beta1"
           },
           {
@@ -1610,7 +1883,7 @@
           {
             "group": "flowcontrol.apiserver.k8s.io",
             "kind": "WatchEvent",
-            "version": "v1alpha1"
+            "version": "v1"
           },
           {
             "group": "flowcontrol.apiserver.k8s.io",
@@ -1621,6 +1894,11 @@
             "group": "flowcontrol.apiserver.k8s.io",
             "kind": "WatchEvent",
             "version": "v1beta2"
+          },
+          {
+            "group": "flowcontrol.apiserver.k8s.io",
+            "kind": "WatchEvent",
+            "version": "v1beta3"
           },
           {
             "group": "imagepolicy.k8s.io",
@@ -1640,6 +1918,11 @@
           {
             "group": "networking.k8s.io",
             "kind": "WatchEvent",
+            "version": "v1alpha1"
+          },
+          {
+            "group": "networking.k8s.io",
+            "kind": "WatchEvent",
             "version": "v1beta1"
           },
           {
@@ -1683,6 +1966,11 @@
             "version": "v1beta1"
           },
           {
+            "group": "resource.k8s.io",
+            "kind": "WatchEvent",
+            "version": "v1alpha2"
+          },
+          {
             "group": "scheduling.k8s.io",
             "kind": "WatchEvent",
             "version": "v1"
@@ -1711,12 +1999,25 @@
             "group": "storage.k8s.io",
             "kind": "WatchEvent",
             "version": "v1beta1"
+          },
+          {
+            "group": "storagemigration.k8s.io",
+            "kind": "WatchEvent",
+            "version": "v1alpha1"
           }
         ]
       },
       "io.k8s.apimachinery.pkg.runtime.RawExtension": {
-        "description": "RawExtension is used to hold extensions in external versions.\n\nTo use this, make a field which has RawExtension as its type in your external, versioned struct, and Object in your internal struct. You also need to register your various plugin types.\n\n// Internal package: type MyAPIObject struct {\n\truntime.TypeMeta `json:\",inline\"`\n\tMyPlugin runtime.Object `json:\"myPlugin\"`\n} type PluginA struct {\n\tAOption string `json:\"aOption\"`\n}\n\n// External package: type MyAPIObject struct {\n\truntime.TypeMeta `json:\",inline\"`\n\tMyPlugin runtime.RawExtension `json:\"myPlugin\"`\n} type PluginA struct {\n\tAOption string `json:\"aOption\"`\n}\n\n// On the wire, the JSON will look something like this: {\n\t\"kind\":\"MyAPIObject\",\n\t\"apiVersion\":\"v1\",\n\t\"myPlugin\": {\n\t\t\"kind\":\"PluginA\",\n\t\t\"aOption\":\"foo\",\n\t},\n}\n\nSo what happens? Decode first uses json or yaml to unmarshal the serialized data into your external MyAPIObject. That causes the raw JSON to be stored, but not unpacked. The next step is to copy (using pkg/conversion) into the internal struct. The runtime package's DefaultScheme has conversion functions installed which will unpack the JSON stored in RawExtension, turning it into the correct object type, and storing it in the Object. (TODO: In the case where the object is of an unknown type, a runtime.Unknown object will be created and stored.)",
+        "description": "RawExtension is used to hold extensions in external versions.\n\nTo use this, make a field which has RawExtension as its type in your external, versioned struct, and Object in your internal struct. You also need to register your various plugin types.\n\n// Internal package:\n\n\ttype MyAPIObject struct {\n\t\truntime.TypeMeta `json:\",inline\"`\n\t\tMyPlugin runtime.Object `json:\"myPlugin\"`\n\t}\n\n\ttype PluginA struct {\n\t\tAOption string `json:\"aOption\"`\n\t}\n\n// External package:\n\n\ttype MyAPIObject struct {\n\t\truntime.TypeMeta `json:\",inline\"`\n\t\tMyPlugin runtime.RawExtension `json:\"myPlugin\"`\n\t}\n\n\ttype PluginA struct {\n\t\tAOption string `json:\"aOption\"`\n\t}\n\n// On the wire, the JSON will look something like this:\n\n\t{\n\t\t\"kind\":\"MyAPIObject\",\n\t\t\"apiVersion\":\"v1\",\n\t\t\"myPlugin\": {\n\t\t\t\"kind\":\"PluginA\",\n\t\t\t\"aOption\":\"foo\",\n\t\t},\n\t}\n\nSo what happens? Decode first uses json or yaml to unmarshal the serialized data into your external MyAPIObject. That causes the raw JSON to be stored, but not unpacked. The next step is to copy (using pkg/conversion) into the internal struct. The runtime package's DefaultScheme has conversion functions installed which will unpack the JSON stored in RawExtension, turning it into the correct object type, and storing it in the Object. (TODO: In the case where the object is of an unknown type, a runtime.Unknown object will be created and stored.)",
         "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "BearerToken": {
+        "description": "Bearer Token authentication",
+        "in": "header",
+        "name": "authorization",
+        "type": "apiKey"
       }
     }
   },
@@ -1750,6 +2051,9 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
@@ -1763,9 +2067,54 @@
         "operationId": "deleteApiextensionsV1CollectionCustomResourceDefinition",
         "parameters": [
           {
+            "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
+            "in": "query",
+            "name": "continue",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "A selector to restrict the list of returned objects by their fields. Defaults to everything.",
+            "in": "query",
+            "name": "fieldSelector",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "The duration in seconds before the object should be deleted. Value must be non-negative integer. The value zero indicates delete immediately. If this value is nil, the default grace period for the specified type will be used. Defaults to a per object value if not specified. zero means delete immediately.",
             "in": "query",
             "name": "gracePeriodSeconds",
+            "schema": {
+              "type": "integer",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
+            "in": "query",
+            "name": "labelSelector",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
+            "in": "query",
+            "name": "limit",
             "schema": {
               "type": "integer",
               "uniqueItems": true
@@ -1790,33 +2139,6 @@
             }
           },
           {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "schema": {
-              "type": "string",
-              "uniqueItems": true
-            }
-          },
-          {
-            "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
-            "in": "query",
-            "name": "labelSelector",
-            "schema": {
-              "type": "string",
-              "uniqueItems": true
-            }
-          },
-          {
-            "description": "A selector to restrict the list of returned objects by their fields. Defaults to everything.",
-            "in": "query",
-            "name": "fieldSelector",
-            "schema": {
-              "type": "string",
-              "uniqueItems": true
-            }
-          },
-          {
             "description": "resourceVersion sets a constraint on what resource versions a request may be served from. See https://kubernetes.io/docs/reference/using-api/api-concepts/#resource-versions for details.\n\nDefaults to unset",
             "in": "query",
             "name": "resourceVersion",
@@ -1835,6 +2157,15 @@
             }
           },
           {
+            "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+            "in": "query",
+            "name": "sendInitialEvents",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
             "in": "query",
             "name": "timeoutSeconds",
@@ -1842,29 +2173,11 @@
               "type": "integer",
               "uniqueItems": true
             }
-          },
-          {
-            "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
-            "in": "query",
-            "name": "limit",
-            "schema": {
-              "type": "integer",
-              "uniqueItems": true
-            }
-          },
-          {
-            "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
-            "in": "query",
-            "name": "continue",
-            "schema": {
-              "type": "string",
-              "uniqueItems": true
-            }
           }
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "*/*": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions"
               }
@@ -1891,20 +2204,38 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "deletecollection",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "get": {
         "description": "list or watch objects of kind CustomResourceDefinition",
         "operationId": "listApiextensionsV1CustomResourceDefinition",
         "parameters": [
           {
-            "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
+            "description": "allowWatchBookmarks requests watch events with type \"BOOKMARK\". Servers that do not implement bookmarks may ignore this flag and bookmarks are sent at the server's discretion. Clients should not assume bookmarks are returned at any specific interval, nor may they assume the server will send any BOOKMARK event during a session. If this is not a watch, this field is ignored.",
             "in": "query",
-            "name": "labelSelector",
+            "name": "allowWatchBookmarks",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
+            "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
+            "in": "query",
+            "name": "continue",
             "schema": {
               "type": "string",
               "uniqueItems": true
@@ -1920,20 +2251,20 @@
             }
           },
           {
-            "description": "Watch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.",
+            "description": "A selector to restrict the list of returned objects by their labels. Defaults to everything.",
             "in": "query",
-            "name": "watch",
+            "name": "labelSelector",
             "schema": {
-              "type": "boolean",
+              "type": "string",
               "uniqueItems": true
             }
           },
           {
-            "description": "allowWatchBookmarks requests watch events with type \"BOOKMARK\". Servers that do not implement bookmarks may ignore this flag and bookmarks are sent at the server's discretion. Clients should not assume bookmarks are returned at any specific interval, nor may they assume the server will send any BOOKMARK event during a session. If this is not a watch, this field is ignored.",
+            "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
             "in": "query",
-            "name": "allowWatchBookmarks",
+            "name": "limit",
             "schema": {
-              "type": "boolean",
+              "type": "integer",
               "uniqueItems": true
             }
           },
@@ -1956,6 +2287,15 @@
             }
           },
           {
+            "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+            "in": "query",
+            "name": "sendInitialEvents",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
+          },
+          {
             "description": "Timeout for the list/watch call. This limits the duration of the call, regardless of any activity or inactivity.",
             "in": "query",
             "name": "timeoutSeconds",
@@ -1965,20 +2305,11 @@
             }
           },
           {
-            "description": "limit is a maximum number of responses to return for a list call. If more items exist, the server will set the `continue` field on the list metadata to a value that can be used with the same initial query to retrieve the next set of results. Setting a limit may return fewer than the requested amount of items (up to zero items) in the event all requested objects are filtered out and clients should only use the presence of the continue field to determine whether more results are available. Servers may choose not to support the limit argument and will return all of the available results. If limit is specified and the continue field is empty, clients may assume that no more results are available. This field is not supported if watch is true.\n\nThe server guarantees that the objects returned when using continue will be identical to issuing a single list call without a limit - that is, no objects created, modified, or deleted after the first request is issued will be included in any subsequent continued requests. This is sometimes referred to as a consistent snapshot, and ensures that a client that is using limit to receive smaller chunks of a very large result can ensure they see all possible objects. If objects are updated during a chunked list the version of the object that was present at the time the first list result was calculated is returned.",
+            "description": "Watch for changes to the described resources and return them as a stream of add, update, and remove notifications. Specify resourceVersion.",
             "in": "query",
-            "name": "limit",
+            "name": "watch",
             "schema": {
-              "type": "integer",
-              "uniqueItems": true
-            }
-          },
-          {
-            "description": "The continue option should be set when retrieving more results from the server. Since this value is server defined, clients may only use the continue value from a previous query result with identical query parameters (except for the value of continue) and the server may reject a continue value it does not recognize. If the specified continue value is no longer valid whether due to expiration (generally five to fifteen minutes) or a configuration change on the server, the server will respond with a 410 ResourceExpired error together with a continue token. If the client needs a consistent list, it must restart their list without the continue field. Otherwise, the client may send another list request with the token received with the 410 error, the server will respond with a list starting from the next key, but from the latest snapshot, which is inconsistent from the previous list results - objects that are created, modified, or deleted after the first list request will be included in the response, as long as their keys are after the \"next key\".\n\nThis field is not supported when watch is true. Clients may start a watch from the last resourceVersion value returned by the server and not miss any modifications.",
-            "in": "query",
-            "name": "continue",
-            "schema": {
-              "type": "string",
+              "type": "boolean",
               "uniqueItems": true
             }
           }
@@ -2013,15 +2344,24 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "list",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "parameters": [
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2053,7 +2393,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2064,12 +2404,13 @@
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "*/*": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -2131,11 +2472,20 @@
               }
             },
             "description": "Accepted"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "post",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       }
     },
     "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{name}": {
@@ -2143,6 +2493,15 @@
         "description": "delete a CustomResourceDefinition",
         "operationId": "deleteApiextensionsV1CustomResourceDefinition",
         "parameters": [
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "schema": {
+              "type": "string",
+              "uniqueItems": true
+            }
+          },
           {
             "description": "The duration in seconds before the object should be deleted. Value must be non-negative integer. The value zero indicates delete immediately. If this value is nil, the default grace period for the specified type will be used. Defaults to a per object value if not specified. zero means delete immediately.",
             "in": "query",
@@ -2169,20 +2528,11 @@
               "type": "string",
               "uniqueItems": true
             }
-          },
-          {
-            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
-            "in": "query",
-            "name": "dryRun",
-            "schema": {
-              "type": "string",
-              "uniqueItems": true
-            }
           }
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "*/*": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.DeleteOptions"
               }
@@ -2229,11 +2579,20 @@
               }
             },
             "description": "Accepted"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "delete",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "get": {
         "description": "read the specified CustomResourceDefinition",
@@ -2258,11 +2617,20 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "get",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "parameters": [
         {
@@ -2276,7 +2644,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2299,15 +2667,6 @@
             }
           },
           {
-            "description": "Force is going to \"force\" Apply requests. It means user will re-acquire conflicting fields owned by other people. Force flag must be unset for non-apply patch requests.",
-            "in": "query",
-            "name": "force",
-            "schema": {
-              "type": "boolean",
-              "uniqueItems": true
-            }
-          },
-          {
             "description": "fieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint. This field is required for apply requests (application/apply-patch) but optional for non-apply patch types (JsonPatch, MergePatch, StrategicMergePatch).",
             "in": "query",
             "name": "fieldManager",
@@ -2317,23 +2676,48 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
               "type": "string",
               "uniqueItems": true
             }
+          },
+          {
+            "description": "Force is going to \"force\" Apply requests. It means user will re-acquire conflicting fields owned by other people. Force flag must be unset for non-apply patch requests.",
+            "in": "query",
+            "name": "force",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
           }
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "application/apply-patch+yaml": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
+            "application/merge-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
+            "application/strategic-merge-patch+json": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -2375,11 +2759,20 @@
               }
             },
             "description": "Created"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "patch",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "put": {
         "description": "replace the specified CustomResourceDefinition",
@@ -2404,7 +2797,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2415,12 +2808,13 @@
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "*/*": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -2462,11 +2856,20 @@
               }
             },
             "description": "Created"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "put",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       }
     },
     "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/{name}/status": {
@@ -2493,11 +2896,20 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "get",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "parameters": [
         {
@@ -2511,7 +2923,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2534,15 +2946,6 @@
             }
           },
           {
-            "description": "Force is going to \"force\" Apply requests. It means user will re-acquire conflicting fields owned by other people. Force flag must be unset for non-apply patch requests.",
-            "in": "query",
-            "name": "force",
-            "schema": {
-              "type": "boolean",
-              "uniqueItems": true
-            }
-          },
-          {
             "description": "fieldManager is a name associated with the actor or entity that is making these changes. The value must be less than or 128 characters long, and only contain printable characters, as defined by https://golang.org/pkg/unicode/#IsPrint. This field is required for apply requests (application/apply-patch) but optional for non-apply patch types (JsonPatch, MergePatch, StrategicMergePatch).",
             "in": "query",
             "name": "fieldManager",
@@ -2552,23 +2955,48 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
               "type": "string",
               "uniqueItems": true
             }
+          },
+          {
+            "description": "Force is going to \"force\" Apply requests. It means user will re-acquire conflicting fields owned by other people. Force flag must be unset for non-apply patch requests.",
+            "in": "query",
+            "name": "force",
+            "schema": {
+              "type": "boolean",
+              "uniqueItems": true
+            }
           }
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "application/apply-patch+yaml": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
+            "application/json-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
+            "application/merge-patch+json": {
+              "schema": {
+                "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
+              }
+            },
+            "application/strategic-merge-patch+json": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.Patch"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -2610,11 +3038,20 @@
               }
             },
             "description": "Created"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "patch",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "put": {
         "description": "replace status of the specified CustomResourceDefinition",
@@ -2639,7 +3076,7 @@
             }
           },
           {
-            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields, provided that the `ServerSideFieldValidation` feature gate is also enabled. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23 and is the default behavior when the `ServerSideFieldValidation` feature gate is disabled. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default when the `ServerSideFieldValidation` feature gate is enabled. - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
             "in": "query",
             "name": "fieldValidation",
             "schema": {
@@ -2650,12 +3087,13 @@
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "*/*": {
               "schema": {
                 "$ref": "#/components/schemas/io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceDefinition"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -2697,11 +3135,20 @@
               }
             },
             "description": "Created"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "put",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       }
     },
     "/apis/apiextensions.k8s.io/v1/watch/customresourcedefinitions": {
@@ -2738,11 +3185,20 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "watchlist",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "parameters": [
         {
@@ -2791,7 +3247,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2814,6 +3270,15 @@
           "name": "resourceVersionMatch",
           "schema": {
             "type": "string",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+          "in": "query",
+          "name": "sendInitialEvents",
+          "schema": {
+            "type": "boolean",
             "uniqueItems": true
           }
         },
@@ -2871,11 +3336,20 @@
               }
             },
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
         "tags": [
           "apiextensions_v1"
-        ]
+        ],
+        "x-kubernetes-action": "watch",
+        "x-kubernetes-group-version-kind": {
+          "group": "apiextensions.k8s.io",
+          "kind": "CustomResourceDefinition",
+          "version": "v1"
+        }
       },
       "parameters": [
         {
@@ -2934,7 +3408,7 @@
           }
         },
         {
-          "description": "If 'true', then the output is pretty printed.",
+          "description": "If 'true', then the output is pretty printed. Defaults to 'false' unless the user-agent indicates a browser or command-line HTTP tool (curl and wget).",
           "in": "query",
           "name": "pretty",
           "schema": {
@@ -2957,6 +3431,15 @@
           "name": "resourceVersionMatch",
           "schema": {
             "type": "string",
+            "uniqueItems": true
+          }
+        },
+        {
+          "description": "`sendInitialEvents=true` may be set together with `watch=true`. In that case, the watch stream will begin with synthetic events to produce the current state of objects in the collection. Once all such events have been sent, a synthetic \"Bookmark\" event  will be sent. The bookmark will report the ResourceVersion (RV) corresponding to the set of objects, and be marked with `\"k8s.io/initial-events-end\": \"true\"` annotation. Afterwards, the watch stream will proceed as usual, sending watch events corresponding to changes (subsequent to the RV) to objects watched.\n\nWhen `sendInitialEvents` option is set, we require `resourceVersionMatch` option to also be set. The semantic of the watch request is as following: - `resourceVersionMatch` = NotOlderThan\n  is interpreted as \"data at least as new as the provided `resourceVersion`\"\n  and the bookmark event is send when the state is synced\n  to a `resourceVersion` at least as fresh as the one provided by the ListOptions.\n  If `resourceVersion` is unset, this is interpreted as \"consistent read\" and the\n  bookmark event is send when the state is synced at least to the moment\n  when request started being processed.\n- `resourceVersionMatch` set to any other value or unset\n  Invalid error is returned.\n\nDefaults to true if `resourceVersion=\"\"` or `resourceVersion=\"0\"` (for backward compatibility reasons) and to false otherwise.",
+          "in": "query",
+          "name": "sendInitialEvents",
+          "schema": {
+            "type": "boolean",
             "uniqueItems": true
           }
         },

@@ -20,6 +20,8 @@ limitations under the License.
 package nodeipam
 
 import (
+	"context"
+	"fmt"
 	"net"
 
 	coreinformers "k8s.io/client-go/informers/core/v1"
@@ -31,7 +33,8 @@ import (
 	nodesync "k8s.io/kubernetes/pkg/controller/nodeipam/ipam/sync"
 )
 
-func startLegacyIPAM(
+func createLegacyIPAM(
+	ctx context.Context,
 	ic *Controller,
 	nodeInformer coreinformers.NodeInformer,
 	cloud cloudprovider.Interface,
@@ -39,7 +42,7 @@ func startLegacyIPAM(
 	clusterCIDRs []*net.IPNet,
 	serviceCIDR *net.IPNet,
 	nodeCIDRMaskSizes []int,
-) {
+) (*ipam.Controller, error) {
 	cfg := &ipam.Config{
 		Resync:       ipamResyncInterval,
 		MaxBackoff:   ipamMaxBackoff,
@@ -57,14 +60,16 @@ func startLegacyIPAM(
 	if len(clusterCIDRs) > 0 {
 		cidr = clusterCIDRs[0]
 	}
+	logger := klog.FromContext(ctx)
 	if len(clusterCIDRs) > 1 {
-		klog.Warningf("Multiple cidrs were configured with FromCluster or FromCloud. cidrs except first one were discarded")
+		logger.Info("Multiple cidrs were configured with FromCluster or FromCloud. cidrs except first one were discarded")
 	}
-	ipamc, err := ipam.NewController(cfg, kubeClient, cloud, cidr, serviceCIDR, nodeCIDRMaskSizes[0])
+	ipamc, err := ipam.NewController(ctx, cfg, kubeClient, cloud, cidr, serviceCIDR, nodeCIDRMaskSizes[0])
 	if err != nil {
-		klog.Fatalf("Error creating ipam controller: %v", err)
+		return nil, fmt.Errorf("error creating ipam controller: %w", err)
 	}
-	if err := ipamc.Start(nodeInformer); err != nil {
-		klog.Fatalf("Error trying to Init(): %v", err)
+	if err := ipamc.Start(logger, nodeInformer); err != nil {
+		return nil, fmt.Errorf("error trying to Init(): %w", err)
 	}
+	return ipamc, nil
 }

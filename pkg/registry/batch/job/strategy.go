@@ -24,10 +24,12 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -35,12 +37,14 @@ import (
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/kubernetes/pkg/api/job"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/api/pod"
 	"k8s.io/kubernetes/pkg/apis/batch"
-	"k8s.io/kubernetes/pkg/apis/batch/validation"
+	batchvalidation "k8s.io/kubernetes/pkg/apis/batch/validation"
 	"k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/features"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/structured-merge-diff/v4/fieldpath"
 )
 
@@ -89,46 +93,42 @@ func (jobStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
 // PrepareForCreate clears the status of a job before creation.
 func (jobStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 	job := obj.(*batch.Job)
+	generateSelectorIfNeeded(job)
 	job.Status = batch.JobStatus{}
 
 	job.Generation = 1
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.IndexedJob) {
-		job.Spec.CompletionMode = nil
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobPodFailurePolicy) {
+		job.Spec.PodFailurePolicy = nil
+	}
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobManagedBy) {
+		job.Spec.ManagedBy = nil
+	}
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobSuccessPolicy) {
+		job.Spec.SuccessPolicy = nil
 	}
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.SuspendJob) {
-		job.Spec.Suspend = nil
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobBackoffLimitPerIndex) {
+		job.Spec.BackoffLimitPerIndex = nil
+		job.Spec.MaxFailedIndexes = nil
+		if job.Spec.PodFailurePolicy != nil {
+			// We drop the FailIndex pod failure policy rules because
+			// JobBackoffLimitPerIndex is disabled.
+			index := 0
+			for _, rule := range job.Spec.PodFailurePolicy.Rules {
+				if rule.Action != batch.PodFailurePolicyActionFailIndex {
+					job.Spec.PodFailurePolicy.Rules[index] = rule
+					index++
+				}
+			}
+			job.Spec.PodFailurePolicy.Rules = job.Spec.PodFailurePolicy.Rules[:index]
+		}
 	}
-
-	if utilfeature.DefaultFeatureGate.Enabled(features.JobTrackingWithFinalizers) {
-		// Until this feature graduates to GA and soaks in clusters, we use an
-		// annotation to mark whether jobs are tracked with it.
-		addJobTrackingAnnotation(job)
-	} else {
-		dropJobTrackingAnnotation(job)
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobPodReplacementPolicy) {
+		job.Spec.PodReplacementPolicy = nil
 	}
 
 	pod.DropDisabledTemplateFields(&job.Spec.Template, nil)
-}
-
-func addJobTrackingAnnotation(job *batch.Job) {
-	if job.Annotations == nil {
-		job.Annotations = map[string]string{}
-	}
-	job.Annotations[batchv1.JobTrackingFinalizer] = ""
-}
-
-func hasJobTrackingAnnotation(job *batch.Job) bool {
-	if job.Annotations == nil {
-		return false
-	}
-	_, ok := job.Annotations[batchv1.JobTrackingFinalizer]
-	return ok
-}
-
-func dropJobTrackingAnnotation(job *batch.Job) {
-	delete(job.Annotations, batchv1.JobTrackingFinalizer)
 }
 
 // PrepareForUpdate clears fields that are not allowed to be set by end users on update.
@@ -137,21 +137,28 @@ func (jobStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object
 	oldJob := old.(*batch.Job)
 	newJob.Status = oldJob.Status
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.IndexedJob) && oldJob.Spec.CompletionMode == nil {
-		newJob.Spec.CompletionMode = nil
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobPodFailurePolicy) && oldJob.Spec.PodFailurePolicy == nil {
+		newJob.Spec.PodFailurePolicy = nil
+	}
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobSuccessPolicy) && oldJob.Spec.SuccessPolicy == nil {
+		newJob.Spec.SuccessPolicy = nil
 	}
 
-	if !utilfeature.DefaultFeatureGate.Enabled(features.SuspendJob) {
-		// There are 3 possible values (nil, true, false) for each flag, so 9
-		// combinations. We want to disallow everything except true->false and
-		// true->nil when the feature gate is disabled. Or, basically allow this
-		// only when oldJob is true.
-		if oldJob.Spec.Suspend == nil || !*oldJob.Spec.Suspend {
-			newJob.Spec.Suspend = oldJob.Spec.Suspend
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobBackoffLimitPerIndex) {
+		if oldJob.Spec.BackoffLimitPerIndex == nil {
+			newJob.Spec.BackoffLimitPerIndex = nil
 		}
+		if oldJob.Spec.MaxFailedIndexes == nil {
+			newJob.Spec.MaxFailedIndexes = nil
+		}
+		// We keep pod failure policy rules with FailIndex actions (is any),
+		// since the pod failure policy is immutable. Note that, if the old job
+		// had BackoffLimitPerIndex set, the new Job will also have it, so the
+		// validation of the pod failure policy with FailIndex rules will
+		// continue to pass.
 	}
-	if !utilfeature.DefaultFeatureGate.Enabled(features.JobTrackingWithFinalizers) && !hasJobTrackingAnnotation(oldJob) {
-		dropJobTrackingAnnotation(newJob)
+	if !utilfeature.DefaultFeatureGate.Enabled(features.JobPodReplacementPolicy) && oldJob.Spec.PodReplacementPolicy == nil {
+		newJob.Spec.PodReplacementPolicy = nil
 	}
 
 	pod.DropDisabledTemplateFields(&newJob.Spec.Template, &oldJob.Spec.Template)
@@ -161,20 +168,17 @@ func (jobStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Object
 	if !apiequality.Semantic.DeepEqual(newJob.Spec, oldJob.Spec) {
 		newJob.Generation = oldJob.Generation + 1
 	}
+
 }
 
 // Validate validates a new job.
 func (jobStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	job := obj.(*batch.Job)
-	// TODO: move UID generation earlier and do this in defaulting logic?
-	if job.Spec.ManualSelector == nil || *job.Spec.ManualSelector == false {
-		generateSelector(job)
-	}
 	opts := validationOptionsForJob(job, nil)
-	return validation.ValidateJob(job, opts)
+	return batchvalidation.ValidateJob(job, opts)
 }
 
-func validationOptionsForJob(newJob, oldJob *batch.Job) validation.JobValidationOptions {
+func validationOptionsForJob(newJob, oldJob *batch.Job) batchvalidation.JobValidationOptions {
 	var newPodTemplate, oldPodTemplate *core.PodTemplateSpec
 	if newJob != nil {
 		newPodTemplate = &newJob.Spec.Template
@@ -182,32 +186,45 @@ func validationOptionsForJob(newJob, oldJob *batch.Job) validation.JobValidation
 	if oldJob != nil {
 		oldPodTemplate = &oldJob.Spec.Template
 	}
-	opts := validation.JobValidationOptions{
+	opts := batchvalidation.JobValidationOptions{
 		PodValidationOptions:    pod.GetValidationOptionsFromPodTemplate(newPodTemplate, oldPodTemplate),
-		AllowTrackingAnnotation: utilfeature.DefaultFeatureGate.Enabled(features.JobTrackingWithFinalizers),
+		AllowElasticIndexedJobs: utilfeature.DefaultFeatureGate.Enabled(features.ElasticIndexedJob),
+		RequirePrefixedLabels:   true,
 	}
 	if oldJob != nil {
-		// Because we don't support the tracking with finalizers for already
-		// existing jobs, we allow the annotation only if the Job already had it,
-		// regardless of the feature gate.
-		opts.AllowTrackingAnnotation = hasJobTrackingAnnotation(oldJob)
+		opts.AllowInvalidLabelValueInSelector = opts.AllowInvalidLabelValueInSelector || metav1validation.LabelSelectorHasInvalidLabelValue(oldJob.Spec.Selector)
 
 		// Updating node affinity, node selector and tolerations is allowed
 		// only for suspended jobs that never started before.
 		suspended := oldJob.Spec.Suspend != nil && *oldJob.Spec.Suspend
 		notStarted := oldJob.Status.StartTime == nil
-		opts.AllowMutableSchedulingDirectives = utilfeature.DefaultFeatureGate.Enabled(features.JobMutableNodeSchedulingDirectives) &&
-			suspended && notStarted
+		opts.AllowMutableSchedulingDirectives = suspended && notStarted
 
+		// Validation should not fail jobs if they don't have the new labels.
+		// This can be removed once we have high confidence that both labels exist (1.30 at least)
+		_, hadJobName := oldJob.Spec.Template.Labels[batch.JobNameLabel]
+		_, hadControllerUid := oldJob.Spec.Template.Labels[batch.ControllerUidLabel]
+		opts.RequirePrefixedLabels = hadJobName && hadControllerUid
 	}
-
 	return opts
 }
 
 // WarningsOnCreate returns warnings for the creation of the given object.
 func (jobStrategy) WarningsOnCreate(ctx context.Context, obj runtime.Object) []string {
 	newJob := obj.(*batch.Job)
-	return pod.GetWarningsForPodTemplate(ctx, field.NewPath("spec", "template"), &newJob.Spec.Template, nil)
+	var warnings []string
+	if msgs := utilvalidation.IsDNS1123Label(newJob.Name); len(msgs) != 0 {
+		warnings = append(warnings, fmt.Sprintf("metadata.name: this is used in Pod names and hostnames, which can result in surprising behavior; a DNS label is recommended: %v", msgs))
+	}
+	warnings = append(warnings, job.WarningsForJobSpec(ctx, field.NewPath("spec"), &newJob.Spec, nil)...)
+	return warnings
+}
+
+// generateSelectorIfNeeded checks the job's manual selector flag and generates selector labels if the flag is true.
+func generateSelectorIfNeeded(obj *batch.Job) {
+	if !*obj.Spec.ManualSelector {
+		generateSelector(obj)
+	}
 }
 
 // generateSelector adds a selector to a job and labels to its template
@@ -220,23 +237,28 @@ func generateSelector(obj *batch.Job) {
 	// The job-name label is unique except in cases that are expected to be
 	// quite uncommon, and is more user friendly than uid.  So, we add it as
 	// a label.
-	_, found := obj.Spec.Template.Labels["job-name"]
-	if found {
-		// User asked us to not automatically generate a selector and labels,
-		// but set a possibly conflicting value.  If there is a conflict,
-		// we will reject in validation.
-	} else {
-		obj.Spec.Template.Labels["job-name"] = string(obj.ObjectMeta.Name)
+	jobNameLabels := []string{batch.LegacyJobNameLabel, batch.JobNameLabel}
+	for _, value := range jobNameLabels {
+		_, found := obj.Spec.Template.Labels[value]
+		if found {
+			// User asked us to automatically generate a selector, but set manual labels.
+			// If there is a conflict, we will reject in validation.
+		} else {
+			obj.Spec.Template.Labels[value] = string(obj.ObjectMeta.Name)
+		}
 	}
+
 	// The controller-uid label makes the pods that belong to this job
 	// only match this job.
-	_, found = obj.Spec.Template.Labels["controller-uid"]
-	if found {
-		// User asked us to automatically generate a selector and labels,
-		// but set a possibly conflicting value.  If there is a conflict,
-		// we will reject in validation.
-	} else {
-		obj.Spec.Template.Labels["controller-uid"] = string(obj.ObjectMeta.UID)
+	controllerUidLabels := []string{batch.LegacyControllerUidLabel, batch.ControllerUidLabel}
+	for _, value := range controllerUidLabels {
+		_, found := obj.Spec.Template.Labels[value]
+		if found {
+			// User asked us to automatically generate a selector, but set manual labels.
+			// If there is a conflict, we will reject in validation.
+		} else {
+			obj.Spec.Template.Labels[value] = string(obj.ObjectMeta.UID)
+		}
 	}
 	// Select the controller-uid label.  This is sufficient for uniqueness.
 	if obj.Spec.Selector == nil {
@@ -245,8 +267,9 @@ func generateSelector(obj *batch.Job) {
 	if obj.Spec.Selector.MatchLabels == nil {
 		obj.Spec.Selector.MatchLabels = make(map[string]string)
 	}
-	if _, found := obj.Spec.Selector.MatchLabels["controller-uid"]; !found {
-		obj.Spec.Selector.MatchLabels["controller-uid"] = string(obj.ObjectMeta.UID)
+
+	if _, found := obj.Spec.Selector.MatchLabels[batch.ControllerUidLabel]; !found {
+		obj.Spec.Selector.MatchLabels[batch.ControllerUidLabel] = string(obj.ObjectMeta.UID)
 	}
 	// If the user specified matchLabel controller-uid=$WRONGUID, then it should fail
 	// in validation, either because the selector does not match the pod template
@@ -279,8 +302,8 @@ func (jobStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) 
 	oldJob := old.(*batch.Job)
 
 	opts := validationOptionsForJob(job, oldJob)
-	validationErrorList := validation.ValidateJob(job, opts)
-	updateErrorList := validation.ValidateJobUpdate(job, oldJob, opts)
+	validationErrorList := batchvalidation.ValidateJob(job, opts)
+	updateErrorList := batchvalidation.ValidateJobUpdate(job, oldJob, opts)
 	return append(validationErrorList, updateErrorList...)
 }
 
@@ -290,7 +313,7 @@ func (jobStrategy) WarningsOnUpdate(ctx context.Context, obj, old runtime.Object
 	newJob := obj.(*batch.Job)
 	oldJob := old.(*batch.Job)
 	if newJob.Generation != oldJob.Generation {
-		warnings = pod.GetWarningsForPodTemplate(ctx, field.NewPath("spec", "template"), &newJob.Spec.Template, &oldJob.Spec.Template)
+		warnings = job.WarningsForJobSpec(ctx, field.NewPath("spec"), &newJob.Spec, &oldJob.Spec)
 	}
 	return warnings
 }
@@ -318,7 +341,73 @@ func (jobStatusStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.
 }
 
 func (jobStatusStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
-	return validation.ValidateJobUpdateStatus(obj.(*batch.Job), old.(*batch.Job))
+	newJob := obj.(*batch.Job)
+	oldJob := old.(*batch.Job)
+
+	opts := getStatusValidationOptions(newJob, oldJob)
+	return batchvalidation.ValidateJobUpdateStatus(newJob, oldJob, opts)
+}
+
+// getStatusValidationOptions returns validation options for Job status
+func getStatusValidationOptions(newJob, oldJob *batch.Job) batchvalidation.JobStatusValidationOptions {
+	if utilfeature.DefaultFeatureGate.Enabled(features.JobManagedBy) {
+		// A strengthened validation of the Job status transitions is needed since the
+		// Job managedBy field let's the Job object be controlled by external
+		// controllers. We want to make sure the transitions done by the external
+		// controllers meet the expectations of the clients of the Job API.
+		// For example, we verify that a Job in terminal state (Failed or Complete)
+		// does not flip to a non-terminal state.
+		//
+		// In the checks below we fail validation for Job status fields (or conditions) only if they change their values
+		// (compared to the oldJob). This allows proceeding with status updates unrelated to the fields violating the
+		// checks, while blocking bad status updates for jobs with correct status.
+		//
+		// Also note, there is another reason we run the validation rules only
+		// if the associated status fields changed. We do it also because some of
+		// the validation rules might be temporarily violated just after a user
+		// updating the spec. In that case we want to give time to the Job
+		// controller to "fix" the status in the following sync. For example, the
+		// rule for checking the format of completedIndexes expects them to be
+		// below .spec.completions, however, this it is ok if the
+		// status.completedIndexes go beyond completions just after a user scales
+		// down a Job.
+		isIndexed := ptr.Deref(newJob.Spec.CompletionMode, batch.NonIndexedCompletion) == batch.IndexedCompletion
+
+		isJobFinishedChanged := batchvalidation.IsJobFinished(oldJob) != batchvalidation.IsJobFinished(newJob)
+		isJobCompleteChanged := batchvalidation.IsJobComplete(oldJob) != batchvalidation.IsJobComplete(newJob)
+		isJobFailedChanged := batchvalidation.IsJobFailed(oldJob) != batchvalidation.IsJobFailed(newJob)
+		isJobFailureTargetChanged := batchvalidation.IsConditionTrue(oldJob.Status.Conditions, batch.JobFailureTarget) != batchvalidation.IsConditionTrue(newJob.Status.Conditions, batch.JobFailureTarget)
+		isCompletedIndexesChanged := oldJob.Status.CompletedIndexes != newJob.Status.CompletedIndexes
+		isFailedIndexesChanged := !ptr.Equal(oldJob.Status.FailedIndexes, newJob.Status.FailedIndexes)
+		isActiveChanged := oldJob.Status.Active != newJob.Status.Active
+		isStartTimeChanged := !ptr.Equal(oldJob.Status.StartTime, newJob.Status.StartTime)
+		isCompletionTimeChanged := !ptr.Equal(oldJob.Status.CompletionTime, newJob.Status.CompletionTime)
+		isUncountedTerminatedPodsChanged := !apiequality.Semantic.DeepEqual(oldJob.Status.UncountedTerminatedPods, newJob.Status.UncountedTerminatedPods)
+
+		return batchvalidation.JobStatusValidationOptions{
+			// We allow to decrease the counter for succeeded pods for jobs which
+			// have equal parallelism and completions, as they can be scaled-down.
+			RejectDecreasingSucceededCounter:             !isIndexed || !ptr.Equal(newJob.Spec.Completions, newJob.Spec.Parallelism),
+			RejectDecreasingFailedCounter:                true,
+			RejectDisablingTerminalCondition:             true,
+			RejectInvalidCompletedIndexes:                isCompletedIndexesChanged,
+			RejectInvalidFailedIndexes:                   isFailedIndexesChanged,
+			RejectCompletedIndexesForNonIndexedJob:       isCompletedIndexesChanged,
+			RejectFailedIndexesForNoBackoffLimitPerIndex: isFailedIndexesChanged,
+			RejectFailedIndexesOverlappingCompleted:      isFailedIndexesChanged || isCompletedIndexesChanged,
+			RejectFinishedJobWithActivePods:              isJobFinishedChanged || isActiveChanged,
+			RejectFinishedJobWithoutStartTime:            isJobFinishedChanged || isStartTimeChanged,
+			RejectFinishedJobWithUncountedTerminatedPods: isJobFinishedChanged || isUncountedTerminatedPodsChanged,
+			RejectStartTimeUpdateForUnsuspendedJob:       isStartTimeChanged,
+			RejectCompletionTimeBeforeStartTime:          isStartTimeChanged || isCompletionTimeChanged,
+			RejectMutatingCompletionTime:                 true,
+			RejectNotCompleteJobWithCompletionTime:       isJobCompleteChanged || isCompletionTimeChanged,
+			RejectCompleteJobWithoutCompletionTime:       isJobCompleteChanged || isCompletionTimeChanged,
+			RejectCompleteJobWithFailedCondition:         isJobCompleteChanged || isJobFailedChanged,
+			RejectCompleteJobWithFailureTargetCondition:  isJobCompleteChanged || isJobFailureTargetChanged,
+		}
+	}
+	return batchvalidation.JobStatusValidationOptions{}
 }
 
 // WarningsOnUpdate returns warnings for the given update.

@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes"
@@ -40,6 +41,7 @@ import (
 	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
+	"k8s.io/kubectl/pkg/util/term"
 )
 
 var (
@@ -122,32 +124,32 @@ type EnvOptions struct {
 	resources              []string
 	output                 string
 	dryRunStrategy         cmdutil.DryRunStrategy
-	dryRunVerifier         *resource.DryRunVerifier
 	builder                func() *resource.Builder
 	updatePodSpecForObject polymorphichelpers.UpdatePodSpecForObjectFunc
 	namespace              string
 	enforceNamespace       bool
 	clientset              *kubernetes.Clientset
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
+	WarningPrinter *printers.WarningPrinter
 }
 
 // NewEnvOptions returns an EnvOptions indicating all containers in the selected
 // pod templates are selected by default and allowing environment to be overwritten
-func NewEnvOptions(streams genericclioptions.IOStreams) *EnvOptions {
+func NewEnvOptions(streams genericiooptions.IOStreams) *EnvOptions {
 	return &EnvOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("env updated").WithTypeSetter(scheme.Scheme),
 
 		ContainerSelector: "*",
 		Overwrite:         true,
-
-		IOStreams: streams,
+		IOStreams:         streams,
 	}
 }
 
 // NewCmdEnv implements the OpenShift cli env command
-func NewCmdEnv(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdEnv(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewEnvOptions(streams)
+
 	cmd := &cobra.Command{
 		Use:                   "env RESOURCE/NAME KEY_1=VAL_1 ... KEY_N=VAL_N",
 		DisableFlagsInUseLine: true,
@@ -169,11 +171,11 @@ func NewCmdEnv(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Co
 	cmd.Flags().StringSliceVarP(&o.Keys, "keys", "", o.Keys, "Comma-separated list of keys to import from specified resource")
 	cmd.Flags().BoolVar(&o.List, "list", o.List, "If true, display the environment and any changes in the standard format. this flag will removed when we have kubectl view env.")
 	cmd.Flags().BoolVar(&o.Resolve, "resolve", o.Resolve, "If true, show secret or configmap references when listing variables")
-	cmd.Flags().StringVarP(&o.Selector, "selector", "l", o.Selector, "Selector (label query) to filter on")
 	cmd.Flags().BoolVar(&o.Local, "local", o.Local, "If true, set env will NOT contact api-server but run locally.")
 	cmd.Flags().BoolVar(&o.All, "all", o.All, "If true, select all resources in the namespace of the specified resource types")
 	cmd.Flags().BoolVar(&o.Overwrite, "overwrite", o.Overwrite, "If true, allow environment to be overwritten, otherwise reject updates that overwrite existing environment.")
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-set")
+	cmdutil.AddLabelSelectorFlagVar(cmd, &o.Selector)
 
 	o.PrintFlags.AddFlags(cmd)
 
@@ -190,10 +192,6 @@ func validateNoOverwrites(existing []v1.EnvVar, env []v1.EnvVar) error {
 	return nil
 }
 
-func keyToEnvName(key string) string {
-	return strings.ToUpper(validEnvNameRegexp.ReplaceAllString(key, "_"))
-}
-
 func contains(key string, keyList []string) bool {
 	if len(keyList) == 0 {
 		return true
@@ -205,6 +203,14 @@ func contains(key string, keyList []string) bool {
 		}
 	}
 	return false
+}
+
+func (o *EnvOptions) keyToEnvName(key string) string {
+	envName := strings.ToUpper(validEnvNameRegexp.ReplaceAllString(key, "_"))
+	if envName != key {
+		o.WarningPrinter.Print(fmt.Sprintf("key %s transferred to %s", key, envName))
+	}
+	return envName
 }
 
 // Complete completes all required options
@@ -225,11 +231,6 @@ func (o *EnvOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []stri
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.dryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 
 	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
 	printer, err := o.PrintFlags.ToPrinter()
@@ -247,6 +248,10 @@ func (o *EnvOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []stri
 		return err
 	}
 	o.builder = f.NewBuilder
+	// Set default WarningPrinter if not already set.
+	if o.WarningPrinter == nil {
+		o.WarningPrinter = printers.NewWarningPrinter(o.ErrOut, printers.WarningPrinterOptions{Color: term.AllowsColorOutput(o.ErrOut)})
+	}
 
 	return nil
 }
@@ -264,6 +269,9 @@ func (o *EnvOptions) Validate() error {
 	}
 	if len(o.Keys) > 0 && len(o.From) == 0 {
 		return fmt.Errorf("when specifying --keys, a configmap or secret must be provided with --from")
+	}
+	if o.WarningPrinter == nil {
+		return fmt.Errorf("WarningPrinter can not be used without initialization")
 	}
 	return nil
 }
@@ -306,7 +314,7 @@ func (o *EnvOptions) RunEnv() error {
 				for key := range from.Data {
 					if contains(key, o.Keys) {
 						envVar := v1.EnvVar{
-							Name: keyToEnvName(key),
+							Name: o.keyToEnvName(key),
 							ValueFrom: &v1.EnvVarSource{
 								SecretKeyRef: &v1.SecretKeySelector{
 									LocalObjectReference: v1.LocalObjectReference{
@@ -323,7 +331,7 @@ func (o *EnvOptions) RunEnv() error {
 				for key := range from.Data {
 					if contains(key, o.Keys) {
 						envVar := v1.EnvVar{
-							Name: keyToEnvName(key),
+							Name: o.keyToEnvName(key),
 							ValueFrom: &v1.EnvVarSource{
 								ConfigMapKeyRef: &v1.ConfigMapKeySelector{
 									LocalObjectReference: v1.LocalObjectReference{
@@ -417,7 +425,7 @@ func (o *EnvOptions) RunEnv() error {
 						}
 					}
 
-					fmt.Fprintf(o.ErrOut, "warning: %s/%s does not have any containers matching %q\n", objKind, objName, o.ContainerSelector)
+					o.WarningPrinter.Print(fmt.Sprintf("%s/%s does not have any containers matching %q", objKind, objName, o.ContainerSelector))
 				}
 				return nil
 			}
@@ -509,13 +517,6 @@ func (o *EnvOptions) RunEnv() error {
 				allErrs = append(allErrs, err)
 			}
 			continue
-		}
-
-		if o.dryRunStrategy == cmdutil.DryRunServer {
-			if err := o.dryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
-				allErrs = append(allErrs, err)
-				continue
-			}
 		}
 
 		actual, err := resource.

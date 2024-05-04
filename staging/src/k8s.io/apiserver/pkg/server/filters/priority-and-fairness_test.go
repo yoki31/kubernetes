@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	flowcontrol "k8s.io/api/flowcontrol/v1beta2"
+	flowcontrol "k8s.io/api/flowcontrol/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -51,6 +51,8 @@ import (
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
+	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -80,9 +82,7 @@ type fakeApfFilter struct {
 	postDequeue  func()
 
 	utilflowcontrol.WatchTracker
-}
-
-func (t fakeApfFilter) MaintainObservations(stopCh <-chan struct{}) {
+	utilflowcontrol.MaxSeatsTracker
 }
 
 func (t fakeApfFilter) Handle(ctx context.Context,
@@ -149,26 +149,29 @@ func newApfServerWithSingleRequest(t *testing.T, decision mockDecision) *httptes
 
 func newApfServerWithHooks(t *testing.T, decision mockDecision, onExecute, postExecute, postEnqueue, postDequeue func()) *httptest.Server {
 	fakeFilter := fakeApfFilter{
-		mockDecision: decision,
-		postEnqueue:  postEnqueue,
-		postDequeue:  postDequeue,
-		WatchTracker: utilflowcontrol.NewWatchTracker(),
+		mockDecision:    decision,
+		postEnqueue:     postEnqueue,
+		postDequeue:     postDequeue,
+		WatchTracker:    utilflowcontrol.NewWatchTracker(),
+		MaxSeatsTracker: utilflowcontrol.NewMaxSeatsTracker(),
 	}
-	return newApfServerWithFilter(t, fakeFilter, onExecute, postExecute)
+	return newApfServerWithFilter(t, fakeFilter, time.Minute/4, onExecute, postExecute)
 }
 
-func newApfServerWithFilter(t *testing.T, flowControlFilter utilflowcontrol.Interface, onExecute, postExecute func()) *httptest.Server {
-	apfServer := httptest.NewServer(newApfHandlerWithFilter(t, flowControlFilter, onExecute, postExecute))
+func newApfServerWithFilter(t *testing.T, flowControlFilter utilflowcontrol.Interface, defaultWaitLimit time.Duration, onExecute, postExecute func()) *httptest.Server {
+	epmetrics.Register()
+	fcmetrics.Register()
+	apfServer := httptest.NewServer(newApfHandlerWithFilter(t, flowControlFilter, defaultWaitLimit, onExecute, postExecute))
 	return apfServer
 }
 
-func newApfHandlerWithFilter(t *testing.T, flowControlFilter utilflowcontrol.Interface, onExecute, postExecute func()) http.Handler {
+func newApfHandlerWithFilter(t *testing.T, flowControlFilter utilflowcontrol.Interface, defaultWaitLimit time.Duration, onExecute, postExecute func()) http.Handler {
 	requestInfoFactory := &apirequest.RequestInfoFactory{APIPrefixes: sets.NewString("apis", "api"), GrouplessAPIPrefixes: sets.NewString("api")}
 	longRunningRequestCheck := BasicLongRunningRequestCheck(sets.NewString("watch"), sets.NewString("proxy"))
 
 	apfHandler := WithPriorityAndFairness(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		onExecute()
-	}), longRunningRequestCheck, flowControlFilter, defaultRequestWorkEstimator)
+	}), longRunningRequestCheck, flowControlFilter, defaultRequestWorkEstimator, defaultWaitLimit)
 
 	handler := apifilters.WithRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(apirequest.WithUser(r.Context(), &user.DefaultInfo{
@@ -185,8 +188,6 @@ func newApfHandlerWithFilter(t *testing.T, flowControlFilter utilflowcontrol.Int
 }
 
 func TestApfSkipLongRunningRequest(t *testing.T) {
-	epmetrics.Register()
-
 	server := newApfServerWithSingleRequest(t, decisionSkipFilter)
 	defer server.Close()
 
@@ -202,8 +203,6 @@ func TestApfSkipLongRunningRequest(t *testing.T) {
 }
 
 func TestApfRejectRequest(t *testing.T) {
-	epmetrics.Register()
-
 	server := newApfServerWithSingleRequest(t, decisionReject)
 	defer server.Close()
 
@@ -217,18 +216,11 @@ func TestApfRejectRequest(t *testing.T) {
 
 	checkForExpectedMetrics(t, []string{
 		"apiserver_request_terminations_total",
-		"apiserver_dropped_requests_total",
+		"apiserver_request_total",
 	})
 }
 
 func TestApfExemptRequest(t *testing.T) {
-	epmetrics.Register()
-	fcmetrics.Register()
-
-	// Wait for at least one sampling window to pass since creation of metrics.ReadWriteConcurrencyObserverPairGenerator,
-	// so that an observation will cause some data to go into the Prometheus metrics.
-	time.Sleep(time.Millisecond * 50)
-
 	server := newApfServerWithSingleRequest(t, decisionNoQueuingExecute)
 	defer server.Close()
 
@@ -242,19 +234,11 @@ func TestApfExemptRequest(t *testing.T) {
 
 	checkForExpectedMetrics(t, []string{
 		"apiserver_current_inflight_requests",
-		"apiserver_flowcontrol_read_vs_write_request_count_watermarks",
-		"apiserver_flowcontrol_read_vs_write_request_count_samples",
+		"apiserver_flowcontrol_read_vs_write_current_requests",
 	})
 }
 
 func TestApfExecuteRequest(t *testing.T) {
-	epmetrics.Register()
-	fcmetrics.Register()
-
-	// Wait for at least one sampling window to pass since creation of metrics.ReadWriteConcurrencyObserverPairGenerator,
-	// so that an observation will cause some data to go into the Prometheus metrics.
-	time.Sleep(time.Millisecond * 50)
-
 	server := newApfServerWithSingleRequest(t, decisionQueuingExecute)
 	defer server.Close()
 
@@ -269,19 +253,11 @@ func TestApfExecuteRequest(t *testing.T) {
 	checkForExpectedMetrics(t, []string{
 		"apiserver_current_inflight_requests",
 		"apiserver_current_inqueue_requests",
-		"apiserver_flowcontrol_read_vs_write_request_count_watermarks",
-		"apiserver_flowcontrol_read_vs_write_request_count_samples",
+		"apiserver_flowcontrol_read_vs_write_current_requests",
 	})
 }
 
 func TestApfExecuteMultipleRequests(t *testing.T) {
-	epmetrics.Register()
-	fcmetrics.Register()
-
-	// Wait for at least one sampling window to pass since creation of metrics.ReadWriteConcurrencyObserverPairGenerator,
-	// so that an observation will cause some data to go into the Prometheus metrics.
-	time.Sleep(time.Millisecond * 50)
-
 	concurrentRequests := 5
 	preStartExecute, postStartExecute := &sync.WaitGroup{}, &sync.WaitGroup{}
 	preEnqueue, postEnqueue := &sync.WaitGroup{}, &sync.WaitGroup{}
@@ -349,14 +325,11 @@ func TestApfExecuteMultipleRequests(t *testing.T) {
 	checkForExpectedMetrics(t, []string{
 		"apiserver_current_inflight_requests",
 		"apiserver_current_inqueue_requests",
-		"apiserver_flowcontrol_read_vs_write_request_count_watermarks",
-		"apiserver_flowcontrol_read_vs_write_request_count_samples",
+		"apiserver_flowcontrol_read_vs_write_current_requests",
 	})
 }
 
 func TestApfCancelWaitRequest(t *testing.T) {
-	epmetrics.Register()
-
 	server := newApfServerWithSingleRequest(t, decisionCancelWait)
 	defer server.Close()
 
@@ -367,7 +340,7 @@ func TestApfCancelWaitRequest(t *testing.T) {
 	checkForExpectedMetrics(t, []string{
 		"apiserver_current_inflight_requests",
 		"apiserver_request_terminations_total",
-		"apiserver_dropped_requests_total",
+		"apiserver_request_total",
 	})
 }
 
@@ -380,22 +353,25 @@ type fakeWatchApfFilter struct {
 	preExecutePanic  bool
 
 	utilflowcontrol.WatchTracker
+	utilflowcontrol.MaxSeatsTracker
 }
 
 func newFakeWatchApfFilter(capacity int) *fakeWatchApfFilter {
 	return &fakeWatchApfFilter{
-		capacity:     capacity,
-		WatchTracker: utilflowcontrol.NewWatchTracker(),
+		capacity:        capacity,
+		WatchTracker:    utilflowcontrol.NewWatchTracker(),
+		MaxSeatsTracker: utilflowcontrol.NewMaxSeatsTracker(),
 	}
 }
 
 func (f *fakeWatchApfFilter) Handle(ctx context.Context,
 	requestDigest utilflowcontrol.RequestDigest,
-	_ func(fs *flowcontrol.FlowSchema, pl *flowcontrol.PriorityLevelConfiguration, flowDistinguisher string),
+	noteFn func(fs *flowcontrol.FlowSchema, pl *flowcontrol.PriorityLevelConfiguration, flowDistinguisher string),
 	_ func() fcrequest.WorkEstimate,
 	_ fq.QueueNoteFn,
 	execFn func(),
 ) {
+	noteFn(bootstrap.SuggestedFlowSchemaGlobalDefault, bootstrap.SuggestedPriorityLevelConfigurationGlobalDefault, requestDigest.User.GetName())
 	canExecute := false
 	func() {
 		f.lock.Lock()
@@ -420,9 +396,6 @@ func (f *fakeWatchApfFilter) Handle(ctx context.Context,
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	f.inflight--
-}
-
-func (f *fakeWatchApfFilter) MaintainObservations(stopCh <-chan struct{}) {
 }
 
 func (f *fakeWatchApfFilter) Run(stopCh <-chan struct{}) error {
@@ -487,7 +460,7 @@ func TestApfExecuteWatchRequestsWithInitializationSignal(t *testing.T) {
 
 	postExecuteFunc := func() {}
 
-	server := newApfServerWithFilter(t, fakeFilter, onExecuteFunc, postExecuteFunc)
+	server := newApfServerWithFilter(t, fakeFilter, time.Minute/4, onExecuteFunc, postExecuteFunc)
 	defer server.Close()
 
 	var wg sync.WaitGroup
@@ -527,7 +500,7 @@ func TestApfRejectWatchRequestsWithInitializationSignal(t *testing.T) {
 	}
 	postExecuteFunc := func() {}
 
-	server := newApfServerWithFilter(t, fakeFilter, onExecuteFunc, postExecuteFunc)
+	server := newApfServerWithFilter(t, fakeFilter, time.Minute/4, onExecuteFunc, postExecuteFunc)
 	defer server.Close()
 
 	if err := expectHTTPGet(fmt.Sprintf("%s/api/v1/namespaces/default/pods?watch=true", server.URL), http.StatusTooManyRequests); err != nil {
@@ -536,6 +509,9 @@ func TestApfRejectWatchRequestsWithInitializationSignal(t *testing.T) {
 }
 
 func TestApfWatchPanic(t *testing.T) {
+	epmetrics.Register()
+	fcmetrics.Register()
+
 	fakeFilter := newFakeWatchApfFilter(1)
 
 	onExecuteFunc := func() {
@@ -543,7 +519,7 @@ func TestApfWatchPanic(t *testing.T) {
 	}
 	postExecuteFunc := func() {}
 
-	apfHandler := newApfHandlerWithFilter(t, fakeFilter, onExecuteFunc, postExecuteFunc)
+	apfHandler := newApfHandlerWithFilter(t, fakeFilter, time.Minute/4, onExecuteFunc, postExecuteFunc)
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err == nil {
@@ -561,6 +537,8 @@ func TestApfWatchPanic(t *testing.T) {
 }
 
 func TestApfWatchHandlePanic(t *testing.T) {
+	epmetrics.Register()
+	fcmetrics.Register()
 	preExecutePanicingFilter := newFakeWatchApfFilter(1)
 	preExecutePanicingFilter.preExecutePanic = true
 
@@ -588,7 +566,7 @@ func TestApfWatchHandlePanic(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			apfHandler := newApfHandlerWithFilter(t, test.filter, onExecuteFunc, postExecuteFunc)
+			apfHandler := newApfHandlerWithFilter(t, test.filter, time.Minute/4, onExecuteFunc, postExecuteFunc)
 			handler := func(w http.ResponseWriter, r *http.Request) {
 				defer func() {
 					if err := recover(); err == nil {
@@ -614,6 +592,8 @@ func TestApfWatchHandlePanic(t *testing.T) {
 // Even though in production we are not using httptest.Server, this logic is shared
 // across these two.
 func TestContextClosesOnRequestProcessed(t *testing.T) {
+	epmetrics.Register()
+	fcmetrics.Register()
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	handler := func(w http.ResponseWriter, r *http.Request) {
@@ -652,6 +632,8 @@ func (f *fakeFilterRequestDigest) Handle(ctx context.Context,
 }
 
 func TestApfWithRequestDigest(t *testing.T) {
+	epmetrics.Register()
+	fcmetrics.Register()
 	longRunningFunc := func(_ *http.Request, _ *apirequest.RequestInfo) bool { return false }
 	fakeFilter := &fakeFilterRequestDigest{}
 
@@ -669,6 +651,7 @@ func TestApfWithRequestDigest(t *testing.T) {
 		longRunningFunc,
 		fakeFilter,
 		func(_ *http.Request, _, _ string) fcrequest.WorkEstimate { return workExpected },
+		time.Minute/4,
 	)
 
 	w := httptest.NewRecorder()
@@ -690,11 +673,12 @@ func TestApfWithRequestDigest(t *testing.T) {
 }
 
 func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
+	epmetrics.Register()
 	fcmetrics.Register()
+	timeFmt := "15:04:05.999"
 
 	t.Run("priority level concurrency is set to 1, request handler panics, next request should not be rejected", func(t *testing.T) {
 		const (
-			requestTimeout                                        = 1 * time.Minute
 			userName                                              = "alice"
 			fsName                                                = "test-fs"
 			plName                                                = "test-pl"
@@ -703,48 +687,58 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 		apfConfiguration := newConfiguration(fsName, plName, userName, plConcurrencyShares, 0)
 		stopCh := make(chan struct{})
-		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, requestTimeout/4, plName, plConcurrency)
+		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, plName, plConcurrency)
 
-		var executed bool
+		headerMatcher := headerMatcher{}
 		// we will raise a panic for the first request.
-		firstRequestPathPanic := "/request/panic-as-designed"
+		firstRequestPathPanic, secondRequestPathShouldWork := "/request/panic-as-designed", "/request/should-succeed-as-expected"
+		firstHandlerDoneCh, secondHandlerDoneCh := make(chan struct{}), make(chan struct{})
 		requestHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			executed = true
-			expectMatchingAPFHeaders(t, w, fsName, plName)
-
-			if r.URL.Path == firstRequestPathPanic {
+			headerMatcher.inspect(t, w, fsName, plName)
+			switch {
+			case r.URL.Path == firstRequestPathPanic:
+				close(firstHandlerDoneCh)
 				panic(fmt.Errorf("request handler panic'd as designed - %#v", r.RequestURI))
+			case r.URL.Path == secondRequestPathShouldWork:
+				close(secondHandlerDoneCh)
+
 			}
 		})
-		handler := newHandlerChain(t, requestHandler, controller, userName, requestTimeout)
 
-		server, requestGetter := newHTTP2ServerWithClient(handler, requestTimeout*2)
+		// NOTE: the server will enforce a 1m timeout on every incoming
+		//  request, and the client enforces a timeout of 2m.
+		handler := newHandlerChain(t, requestHandler, controller, userName, time.Minute)
+		server, requestGetter := newHTTP2ServerWithClient(handler, 2*time.Minute)
 		defer server.Close()
 
 		// we send two requests synchronously, one at a time
 		//  - first request is expected to panic as designed
-		//  - second request is expected to success
+		//  - second request is expected to succeed
 		_, err := requestGetter(firstRequestPathPanic)
-		if !executed {
-			t.Errorf("Expected inner handler to be executed for request: %q", firstRequestPathPanic)
+
+		// did the server handler panic, as expected?
+		select {
+		case <-firstHandlerDoneCh:
+		case <-time.After(wait.ForeverTestTimeout):
+			t.Errorf("Expected the server handler to panic for request: %q", firstRequestPathPanic)
 		}
 		if isClientTimeout(err) {
 			t.Fatalf("the client has unexpectedly timed out - request: %q error: %s", firstRequestPathPanic, err.Error())
 		}
 		expectResetStreamError(t, err)
 
-		executed = false
 		// the second request should be served successfully.
-		secondRequestPathShouldWork := "/request/should-succeed-as-expected"
 		response, err := requestGetter(secondRequestPathShouldWork)
-		if !executed {
-			t.Errorf("Expected inner handler to be executed for request: %s", secondRequestPathShouldWork)
-		}
 		if err != nil {
 			t.Fatalf("Expected request: %q to get a response, but got error: %#v", secondRequestPathShouldWork, err)
 		}
 		if response.StatusCode != http.StatusOK {
 			t.Errorf("Expected HTTP status code: %d for request: %q, but got: %#v", http.StatusOK, secondRequestPathShouldWork, response)
+		}
+		select {
+		case <-secondHandlerDoneCh:
+		case <-time.After(wait.ForeverTestTimeout):
+			t.Errorf("Expected the server handler to have completed: %q", secondRequestPathShouldWork)
 		}
 
 		close(stopCh)
@@ -759,7 +753,6 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 	t.Run("priority level concurrency is set to 1, request times out and inner handler hasn't written to the response yet", func(t *testing.T) {
 		t.Parallel()
 		const (
-			requestTimeout                                        = 5 * time.Second
 			userName                                              = "alice"
 			fsName                                                = "test-fs"
 			plName                                                = "test-pl"
@@ -768,14 +761,13 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 		apfConfiguration := newConfiguration(fsName, plName, userName, plConcurrencyShares, 0)
 		stopCh := make(chan struct{})
-		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, requestTimeout/4, plName, plConcurrency)
+		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, plName, plConcurrency)
 
-		var executed bool
+		headerMatcher := headerMatcher{}
 		rquestTimesOutPath := "/request/time-out-as-designed"
 		reqHandlerCompletedCh, callerRoundTripDoneCh := make(chan struct{}), make(chan struct{})
 		requestHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			executed = true
-			expectMatchingAPFHeaders(t, w, fsName, plName)
+			headerMatcher.inspect(t, w, fsName, plName)
 
 			if r.URL.Path == rquestTimesOutPath {
 				defer close(reqHandlerCompletedCh)
@@ -784,13 +776,16 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 				<-callerRoundTripDoneCh
 			}
 		})
-		handler := newHandlerChain(t, requestHandler, controller, userName, requestTimeout)
 
-		server, requestGetter := newHTTP2ServerWithClient(handler, requestTimeout*2)
+		// NOTE: the server will enforce a 5s timeout on every
+		//  incoming request, and the client enforces a timeout of 1m.
+		handler := newHandlerChain(t, requestHandler, controller, userName, 5*time.Second)
+		server, requestGetter := newHTTP2ServerWithClient(handler, time.Minute)
 		defer server.Close()
 
-		// send a request synchronously with a client timeout of requestTimeout*2 seconds
-		// this ensures the test does not block indefinitely if the server does not respond.
+		// send a request synchronously with a client timeout of 1m,  this minimizes the
+		// chance of a flake in ci, the cient waits long enough for the server to send a
+		// timeout response to the client.
 		var (
 			response *http.Response
 			err      error
@@ -805,11 +800,12 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 			}
 		}()
 
-		if !executed {
-			t.Errorf("Expected inner handler to be executed for request: %q", rquestTimesOutPath)
-		}
 		t.Logf("Waiting for the inner handler of the request: %q to complete", rquestTimesOutPath)
-		<-reqHandlerCompletedCh
+		select {
+		case <-reqHandlerCompletedCh:
+		case <-time.After(wait.ForeverTestTimeout):
+			t.Errorf("Expected the server handler to have completed: %q", rquestTimesOutPath)
+		}
 
 		if err != nil {
 			t.Fatalf("Expected request: %q to get a response, but got error: %#v", rquestTimesOutPath, err)
@@ -830,7 +826,6 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 	t.Run("priority level concurrency is set to 1, inner handler panics after the request times out", func(t *testing.T) {
 		t.Parallel()
 		const (
-			requestTimeout                                        = 5 * time.Second
 			userName                                              = "alice"
 			fsName                                                = "test-fs"
 			plName                                                = "test-pl"
@@ -839,32 +834,35 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 		apfConfiguration := newConfiguration(fsName, plName, userName, plConcurrencyShares, 0)
 		stopCh := make(chan struct{})
-		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, requestTimeout/4, plName, plConcurrency)
+		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, plName, plConcurrency)
 
-		var innerHandlerWriteErr error
-		reqHandlerCompletedCh, callerRoundTripDoneCh := make(chan struct{}), make(chan struct{})
+		headerMatcher := headerMatcher{}
+		reqHandlerErrCh, callerRoundTripDoneCh := make(chan error, 1), make(chan struct{})
 		rquestTimesOutPath := "/request/time-out-as-designed"
 		requestHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			expectMatchingAPFHeaders(t, w, fsName, plName)
+			headerMatcher.inspect(t, w, fsName, plName)
 
 			if r.URL.Path == rquestTimesOutPath {
-				defer close(reqHandlerCompletedCh)
 				<-callerRoundTripDoneCh
 
 				// we expect the timeout handler to have timed out this request by now and any attempt
 				// to write to the response should return a http.ErrHandlerTimeout error.
-				_, innerHandlerWriteErr = w.Write([]byte("foo"))
+				_, innerHandlerWriteErr := w.Write([]byte("foo"))
+				reqHandlerErrCh <- innerHandlerWriteErr
 
 				panic(http.ErrAbortHandler)
 			}
 		})
-		handler := newHandlerChain(t, requestHandler, controller, userName, requestTimeout)
 
-		server, requestGetter := newHTTP2ServerWithClient(handler, requestTimeout*2)
+		// NOTE: the server will enforce a 5s timeout on every
+		//  incoming request, and the client enforces a timeout of 1m.
+		handler := newHandlerChain(t, requestHandler, controller, userName, 5*time.Second)
+		server, requestGetter := newHTTP2ServerWithClient(handler, time.Minute)
 		defer server.Close()
 
-		// send a request synchronously with a client timeout of requestTimeout*2 seconds
-		// this ensures the test does not block indefinitely if the server does not respond.
+		// send a request synchronously with a client timeout of 1m, this minimizes the
+		// chance of a flake in ci, the cient waits long enough for the server to send a
+		// timeout response to the client.
 		var (
 			response *http.Response
 			err      error
@@ -879,11 +877,15 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 		}()
 
 		t.Logf("Waiting for the inner handler of the request: %q to complete", rquestTimesOutPath)
-		<-reqHandlerCompletedCh
-
-		if innerHandlerWriteErr != http.ErrHandlerTimeout {
-			t.Fatalf("Expected error: %#v, but got: %#v", http.ErrHandlerTimeout, err)
+		select {
+		case innerHandlerWriteErr := <-reqHandlerErrCh:
+			if innerHandlerWriteErr != http.ErrHandlerTimeout {
+				t.Fatalf("Expected error: %#v, but got: %#v", http.ErrHandlerTimeout, err)
+			}
+		case <-time.After(wait.ForeverTestTimeout):
+			t.Errorf("Expected the server handler to have completed: %q", rquestTimesOutPath)
 		}
+
 		if err != nil {
 			t.Fatalf("Expected request: %q to get a response, but got error: %#v", rquestTimesOutPath, err)
 		}
@@ -903,7 +905,6 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 	t.Run("priority level concurrency is set to 1, inner handler writes to the response before request times out", func(t *testing.T) {
 		t.Parallel()
 		const (
-			requestTimeout                                        = 5 * time.Second
 			userName                                              = "alice"
 			fsName                                                = "test-fs"
 			plName                                                = "test-pl"
@@ -912,16 +913,15 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 		apfConfiguration := newConfiguration(fsName, plName, userName, plConcurrencyShares, 0)
 		stopCh := make(chan struct{})
-		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, requestTimeout/4, plName, plConcurrency)
+		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, plName, plConcurrency)
 
-		var innerHandlerWriteErr error
+		headerMatcher := headerMatcher{}
 		rquestTimesOutPath := "/request/time-out-as-designed"
-		reqHandlerCompletedCh, callerRoundTripDoneCh := make(chan struct{}), make(chan struct{})
+		reqHandlerErrCh, callerRoundTripDoneCh := make(chan error, 1), make(chan struct{})
 		requestHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			expectMatchingAPFHeaders(t, w, fsName, plName)
+			headerMatcher.inspect(t, w, fsName, plName)
 
 			if r.URL.Path == rquestTimesOutPath {
-				defer close(reqHandlerCompletedCh)
 
 				// inner handler writes header and then let the request time out.
 				w.WriteHeader(http.StatusBadRequest)
@@ -929,14 +929,20 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 				// we expect the timeout handler to have timed out this request by now and any attempt
 				// to write to the response should return a http.ErrHandlerTimeout error.
-				_, innerHandlerWriteErr = w.Write([]byte("foo"))
+				_, innerHandlerWriteErr := w.Write([]byte("foo"))
+				reqHandlerErrCh <- innerHandlerWriteErr
 			}
 		})
-		handler := newHandlerChain(t, requestHandler, controller, userName, requestTimeout)
 
-		server, requestGetter := newHTTP2ServerWithClient(handler, requestTimeout*2)
+		// NOTE: the server will enforce a 5s timeout on every
+		//  incoming request, and the client enforces a timeout of 1m.
+		handler := newHandlerChain(t, requestHandler, controller, userName, 5*time.Second)
+		server, requestGetter := newHTTP2ServerWithClient(handler, time.Minute)
 		defer server.Close()
 
+		// send a request synchronously with a client timeout of 1m, this minimizes the
+		// chance of a flake in ci, the cient waits long enough for the server to send a
+		// timeout response to the client.
 		var err error
 		func() {
 			defer close(callerRoundTripDoneCh)
@@ -948,11 +954,15 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 		}()
 
 		t.Logf("Waiting for the inner handler of the request: %q to complete", rquestTimesOutPath)
-		<-reqHandlerCompletedCh
-
-		if innerHandlerWriteErr != http.ErrHandlerTimeout {
-			t.Fatalf("Expected error: %#v, but got: %#v", http.ErrHandlerTimeout, err)
+		select {
+		case innerHandlerWriteErr := <-reqHandlerErrCh:
+			if innerHandlerWriteErr != http.ErrHandlerTimeout {
+				t.Fatalf("Expected error: %#v, but got: %#v", http.ErrHandlerTimeout, err)
+			}
+		case <-time.After(wait.ForeverTestTimeout):
+			t.Errorf("Expected the server handler to have completed: %q", rquestTimesOutPath)
 		}
+
 		expectResetStreamError(t, err)
 
 		close(stopCh)
@@ -973,7 +983,6 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 		}
 
 		const (
-			requestTimeout                                                     = 5 * time.Second
 			userName                                                           = "alice"
 			fsName                                                             = "test-fs"
 			plName                                                             = "test-pl"
@@ -982,20 +991,16 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 		apfConfiguration := newConfiguration(fsName, plName, userName, plConcurrencyShares, queueLength)
 		stopCh := make(chan struct{})
-		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, requestTimeout/4, plName, plConcurrency)
+		controller, controllerCompletedCh := startAPFController(t, stopCh, apfConfiguration, serverConcurrency, plName, plConcurrency)
 
-		var firstRequestInnerHandlerWriteErr error
-		var secondRequestExecuted bool
-		firstRequestTimesOutPath := "/request/first/time-out-as-designed"
-		secondRequestEnqueuedPath := "/request/second/enqueued-as-designed"
-		firstReqHandlerCompletedCh, firstReqInProgressCh := make(chan struct{}), make(chan struct{})
+		headerMatcher := headerMatcher{}
+		firstRequestTimesOutPath, secondRequestEnqueuedPath := "/request/first/time-out-as-designed", "/request/second/enqueued-as-designed"
+		firstReqHandlerErrCh, firstReqInProgressCh := make(chan error, 1), make(chan struct{})
 		firstReqRoundTripDoneCh, secondReqRoundTripDoneCh := make(chan struct{}), make(chan struct{})
 		requestHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			expectMatchingAPFHeaders(t, w, fsName, plName)
-
-			if r.URL.Path == firstRequestTimesOutPath {
-				defer close(firstReqHandlerCompletedCh)
-
+			headerMatcher.inspect(t, w, fsName, plName)
+			switch {
+			case r.URL.Path == firstRequestTimesOutPath:
 				close(firstReqInProgressCh)
 				<-firstReqRoundTripDoneCh
 
@@ -1005,30 +1010,47 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 				// we expect the timeout handler to have timed out this request by now and any attempt
 				// to write to the response should return a http.ErrHandlerTimeout error.
-				_, firstRequestInnerHandlerWriteErr = w.Write([]byte("foo"))
-				return
-			}
+				_, firstRequestInnerHandlerWriteErr := w.Write([]byte("foo"))
+				firstReqHandlerErrCh <- firstRequestInnerHandlerWriteErr
 
-			if r.URL.Path == secondRequestEnqueuedPath {
+			case r.URL.Path == secondRequestEnqueuedPath:
 				// we expect the concurrency to be set to 1 and so this request should never be executed.
-				secondRequestExecuted = true
+				t.Errorf("Expected second request to be enqueued: %q", secondRequestEnqueuedPath)
 			}
 		})
-		handler := newHandlerChain(t, requestHandler, controller, userName, requestTimeout)
 
-		server, requestGetter := newHTTP2ServerWithClient(handler, requestTimeout*2)
+		// NOTE: the server will enforce a 5s timeout on every
+		//  incoming request, and the client enforces a timeout of 1m.
+		handler := newHandlerChain(t, requestHandler, controller, userName, 5*time.Second)
+		server, requestGetter := newHTTP2ServerWithClient(handler, time.Minute)
 		defer server.Close()
 
-		// we send two requests, each with a client timeout of requestTimeout*2 seconds
-		// this ensures the test does not block indefinitely if the server does not respond.
-		//  - first request (expected to timeout as designed) sent from a new goroutine
-		//  - second request (expected to be enqueued) is sent from a new goroutine
+		// This test involves two requests sent to the same priority level, which has 1 queue and
+		// a concurrency limit of 1.  The handler chain include the timeout filter.
+		// Each request is sent from a separate goroutine, with a client-side timeout of 1m, on
+		// the other hand, the server enforces a timeout of 5s (via the timeout filter).
+		// The first request should get dispatched immediately; execution (a) starts with closing
+		// the channel that triggers the second client goroutine to send its request and then (b)
+		// waits for both client goroutines to have gotten a response (expected to be timeouts).
+		// The second request sits in the queue until the timeout filter does its thing, which
+		// it does concurrently to both requests.  For the first request this should make the client
+		// get a timeout response without directly affecting execution.  For the second request, the
+		// fact that the timeout filter closes the request's Context.Done() causes the request to be
+		// promptly ejected from its queue.  The goroutine doing the APF handling writes an HTTP
+		// response message with status 429.
+		// The timeout handler invokes its inner handler in one goroutine while reacting to the
+		// passage of time in its original goroutine.  That reaction to a time out consists of either
+		// (a) writing an HTTP response message with status 504 to indicate the timeout or (b) doing an
+		// HTTP/2 stream close; the latter is done if either the connection has been "hijacked" or some
+		// other goroutine (e.g., the one running the inner handler) has started to write a response.
+		// In the scenario tested here, there is thus a race between two goroutines to respond to
+		// the second request and any of their responses is allowed by the test.
 		firstReqResultCh, secondReqResultCh := make(chan result, 1), make(chan result, 1)
 		go func() {
 			defer close(firstReqRoundTripDoneCh)
-			t.Logf("Sending request: %q", firstRequestTimesOutPath)
+			t.Logf("At %s, Sending request: %q", time.Now().Format(timeFmt), firstRequestTimesOutPath)
 			resp, err := requestGetter(firstRequestTimesOutPath)
-			t.Logf("RoundTrip of request: %q has completed", firstRequestTimesOutPath)
+			t.Logf("At %s, RoundTrip of request: %q has completed", time.Now().Format(timeFmt), firstRequestTimesOutPath)
 			firstReqResultCh <- result{err: err, response: resp}
 		}()
 		go func() {
@@ -1037,43 +1059,46 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 			defer close(secondReqRoundTripDoneCh)
 
 			<-firstReqInProgressCh
-			t.Logf("Sending request: %q", secondRequestEnqueuedPath)
+			t.Logf("At %s, Sending request: %q", time.Now().Format(timeFmt), secondRequestEnqueuedPath)
 			resp, err := requestGetter(secondRequestEnqueuedPath)
-			t.Logf("RoundTrip of request: %q has completed", secondRequestEnqueuedPath)
+			t.Logf("At %s, RoundTrip of request: %q has completed", time.Now().Format(timeFmt), secondRequestEnqueuedPath)
 			secondReqResultCh <- result{err: err, response: resp}
 		}()
 
 		firstReqResult := <-firstReqResultCh
 		if isClientTimeout(firstReqResult.err) {
-			t.Fatalf("the client has unexpectedly timed out - request: %q error: %s", firstRequestTimesOutPath, firstReqResult.err.Error())
+			t.Fatalf("the client has unexpectedly timed out - request: %q error: %s", firstRequestTimesOutPath, fmtError(firstReqResult.err))
 		}
 		t.Logf("Waiting for the inner handler of the request: %q to complete", firstRequestTimesOutPath)
-		<-firstReqHandlerCompletedCh
+		select {
+		case firstRequestInnerHandlerWriteErr := <-firstReqHandlerErrCh:
+			if firstRequestInnerHandlerWriteErr != http.ErrHandlerTimeout {
+				t.Fatalf("Expected error: %#v, but got: %s", http.ErrHandlerTimeout, fmtError(firstRequestInnerHandlerWriteErr))
+			}
+		case <-time.After(wait.ForeverTestTimeout):
+			t.Errorf("Expected the server handler to have completed: %q", firstRequestTimesOutPath)
+		}
 
 		// first request is expected to time out.
-		if firstRequestInnerHandlerWriteErr != http.ErrHandlerTimeout {
-			t.Fatalf("Expected error: %#v, but got: %#v", http.ErrHandlerTimeout, firstRequestInnerHandlerWriteErr)
-		}
-		if firstReqResult.err != nil {
-			t.Fatalf("Expected request: %q to get a response, but got error: %#v", firstRequestTimesOutPath, firstReqResult.err)
-		}
-		if firstReqResult.response.StatusCode != http.StatusGatewayTimeout {
-			t.Errorf("Expected HTTP status code: %d for request: %q, but got: %#v", http.StatusGatewayTimeout, firstRequestTimesOutPath, firstReqResult.response)
+		if isStreamReset(firstReqResult.err) || firstReqResult.response.StatusCode != http.StatusGatewayTimeout {
+			// got what was expected
+		} else if firstReqResult.err != nil {
+			t.Fatalf("Expected request: %q to get a response or stream reset, but got error: %s", firstRequestTimesOutPath, fmtError(firstReqResult.err))
+		} else if firstReqResult.response.StatusCode != http.StatusGatewayTimeout {
+			t.Errorf("Expected HTTP status code: %d for request: %q, but got: %#+v", http.StatusGatewayTimeout, firstRequestTimesOutPath, firstReqResult.response)
 		}
 
 		// second request is expected to either be rejected (ideal behavior) or time out (current approximation of the ideal behavior)
 		secondReqResult := <-secondReqResultCh
 		if isClientTimeout(secondReqResult.err) {
-			t.Fatalf("the client has unexpectedly timed out - request: %q error: %s", secondRequestEnqueuedPath, secondReqResult.err.Error())
+			t.Fatalf("the client has unexpectedly timed out - request: %q error: %s", secondRequestEnqueuedPath, fmtError(secondReqResult.err))
 		}
-		if secondRequestExecuted {
-			t.Errorf("Expected second request to be enqueued: %q", secondRequestEnqueuedPath)
-		}
-		if secondReqResult.err != nil {
-			t.Fatalf("Expected request: %q to get a response, but got error: %#v", secondRequestEnqueuedPath, secondReqResult.err)
-		}
-		if !(secondReqResult.response.StatusCode == http.StatusTooManyRequests || secondReqResult.response.StatusCode == http.StatusGatewayTimeout) {
-			t.Errorf("Expected HTTP status code: %d or %d for request: %q, but got: %#v", http.StatusTooManyRequests, http.StatusGatewayTimeout, secondRequestEnqueuedPath, secondReqResult.response)
+		if isStreamReset(secondReqResult.err) || secondReqResult.response.StatusCode == http.StatusTooManyRequests || secondReqResult.response.StatusCode == http.StatusGatewayTimeout {
+			// got what was expected
+		} else if secondReqResult.err != nil {
+			t.Fatalf("Expected request: %q to get a response or stream reset, but got error: %s", secondRequestEnqueuedPath, fmtError(secondReqResult.err))
+		} else if !(secondReqResult.response.StatusCode == http.StatusTooManyRequests || secondReqResult.response.StatusCode == http.StatusGatewayTimeout) {
+			t.Errorf("Expected HTTP status code: %d or %d for request: %q, but got: %#+v", http.StatusTooManyRequests, http.StatusGatewayTimeout, secondRequestEnqueuedPath, secondReqResult.response)
 		}
 
 		close(stopCh)
@@ -1081,17 +1106,21 @@ func TestPriorityAndFairnessWithPanicRecoveryAndTimeoutFilter(t *testing.T) {
 
 		controllerErr := <-controllerCompletedCh
 		if controllerErr != nil {
-			t.Errorf("Expected no error from the controller, but got: %#v", controllerErr)
+			t.Errorf("Expected no error from the controller, but got: %s", fmtError(controllerErr))
 		}
 	})
 }
 
+func fmtError(err error) string {
+	return fmt.Sprintf("%#+v=%q", err, err.Error())
+}
+
 func startAPFController(t *testing.T, stopCh <-chan struct{}, apfConfiguration []runtime.Object, serverConcurrency int,
-	requestWaitLimit time.Duration, plName string, plConcurrency int) (utilflowcontrol.Interface, <-chan error) {
+	plName string, plConcurrency int) (utilflowcontrol.Interface, <-chan error) {
 	clientset := newClientset(t, apfConfiguration...)
 	// this test does not rely on resync, so resync period is set to zero
 	factory := informers.NewSharedInformerFactory(clientset, 0)
-	controller := utilflowcontrol.New(factory, clientset.FlowcontrolV1beta2(), serverConcurrency, requestWaitLimit)
+	controller := utilflowcontrol.New(factory, clientset.FlowcontrolV1(), serverConcurrency)
 
 	factory.Start(stopCh)
 
@@ -1113,7 +1142,7 @@ func startAPFController(t *testing.T, stopCh <-chan struct{}, apfConfiguration [
 	// make sure that apf controller syncs the priority level configuration object we are using in this test.
 	// read the metrics and ensure the concurrency limit for our priority level is set to the expected value.
 	pollErr := wait.PollImmediate(100*time.Millisecond, 5*time.Second, func() (done bool, err error) {
-		if err := gaugeValueMatch("apiserver_flowcontrol_request_concurrency_limit", map[string]string{"priority_level": plName}, plConcurrency); err != nil {
+		if err := gaugeValueMatch("apiserver_flowcontrol_nominal_limit_seats", map[string]string{"priority_level": plName}, plConcurrency); err != nil {
 			t.Logf("polling retry - error: %s", err)
 			return false, nil
 		}
@@ -1138,21 +1167,31 @@ func newHTTP2ServerWithClient(handler http.Handler, clientTimeout time.Duration)
 	}
 }
 
+type headerMatcher struct{}
+
 // verifies that the expected flow schema and priority level UIDs are attached to the header.
-func expectMatchingAPFHeaders(t *testing.T, w http.ResponseWriter, expectedFS, expectedPL string) {
-	if w == nil {
-		t.Fatal("expected a non nil HTTP response")
-	}
+func (m *headerMatcher) inspect(t *testing.T, w http.ResponseWriter, expectedFS, expectedPL string) {
+	t.Helper()
+	err := func() error {
+		if w == nil {
+			return fmt.Errorf("expected a non nil HTTP response")
+		}
 
-	key := flowcontrol.ResponseHeaderMatchedFlowSchemaUID
-	if value := w.Header().Get(key); expectedFS != value {
-		t.Fatalf("expected HTTP header %s to have value %q, but got: %q", key, expectedFS, value)
-	}
+		key := flowcontrol.ResponseHeaderMatchedFlowSchemaUID
+		if value := w.Header().Get(key); expectedFS != value {
+			return fmt.Errorf("expected HTTP header %s to have value %q, but got: %q", key, expectedFS, value)
+		}
 
-	key = flowcontrol.ResponseHeaderMatchedPriorityLevelConfigurationUID
-	if value := w.Header().Get(key); expectedPL != value {
-		t.Fatalf("expected HTTP header %s to have value %q, but got %q", key, expectedPL, value)
+		key = flowcontrol.ResponseHeaderMatchedPriorityLevelConfigurationUID
+		if value := w.Header().Get(key); expectedPL != value {
+			return fmt.Errorf("expected HTTP header %s to have value %q, but got %q", key, expectedPL, value)
+		}
+		return nil
+	}()
+	if err == nil {
+		return
 	}
+	t.Errorf("Expected APF headers to match, but got: %v", err)
 }
 
 // when a request panics, http2 resets the stream with an INTERNAL_ERROR message
@@ -1160,14 +1199,10 @@ func expectResetStreamError(t *testing.T, err error) {
 	if err == nil {
 		t.Fatalf("expected the server to send an error, but got nil")
 	}
-
-	uerr, ok := err.(*url.Error)
-	if !ok {
-		t.Fatalf("expected the error to be of type *url.Error, but got: %T", err)
+	if isStreamReset(err) {
+		return
 	}
-	if !strings.Contains(uerr.Error(), "INTERNAL_ERROR") {
-		t.Fatalf("expected a stream reset error, but got: %s", uerr.Error())
-	}
+	t.Fatalf("expected a stream reset error, but got %#+v=%s", err, err.Error())
 }
 
 func newClientset(t *testing.T, objects ...runtime.Object) clientset.Interface {
@@ -1185,7 +1220,7 @@ func newHandlerChain(t *testing.T, handler http.Handler, filter utilflowcontrol.
 	requestInfoFactory := &apirequest.RequestInfoFactory{APIPrefixes: sets.NewString("apis", "api"), GrouplessAPIPrefixes: sets.NewString("api")}
 	longRunningRequestCheck := BasicLongRunningRequestCheck(sets.NewString("watch"), sets.NewString("proxy"))
 
-	apfHandler := WithPriorityAndFairness(handler, longRunningRequestCheck, filter, defaultRequestWorkEstimator)
+	apfHandler := WithPriorityAndFairness(handler, longRunningRequestCheck, filter, defaultRequestWorkEstimator, time.Minute/4)
 
 	// add the handler in the chain that adds the specified user to the request context
 	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1202,7 +1237,7 @@ func newHandlerChain(t *testing.T, handler http.Handler, filter utilflowcontrol.
 	handler = apifilters.WithRequestDeadline(handler, nil, nil, longRunningRequestCheck, nil, requestTimeout)
 	handler = apifilters.WithRequestInfo(handler, requestInfoFactory)
 	handler = WithPanicRecovery(handler, requestInfoFactory)
-	handler = apifilters.WithAuditID(handler)
+	handler = apifilters.WithAuditInit(handler)
 	return handler
 }
 
@@ -1273,7 +1308,7 @@ func newConfiguration(fsName, plName, user string, concurrency int32, queueLengt
 		Spec: flowcontrol.PriorityLevelConfigurationSpec{
 			Type: flowcontrol.PriorityLevelEnablementLimited,
 			Limited: &flowcontrol.LimitedPriorityLevelConfiguration{
-				AssuredConcurrencyShares: concurrency,
+				NominalConcurrencyShares: ptr.To(concurrency),
 				LimitResponse: flowcontrol.LimitResponse{
 					Type:    responseType,
 					Queuing: qcfg,
@@ -1348,4 +1383,120 @@ func isClientTimeout(err error) bool {
 		return urlErr.Timeout()
 	}
 	return false
+}
+
+func isStreamReset(err error) bool {
+	if err == nil {
+		return false
+	}
+	if urlErr, ok := err.(*url.Error); ok {
+		// Sadly, the client does not receive a more specific indication
+		// of stream reset.
+		return strings.Contains(urlErr.Err.Error(), "INTERNAL_ERROR")
+	}
+	return false
+}
+
+func TestGetRequestWaitContext(t *testing.T) {
+	tests := []struct {
+		name                    string
+		defaultRequestWaitLimit time.Duration
+		parent                  func(t time.Time) (context.Context, context.CancelFunc)
+		newReqWaitCtxExpected   bool
+		reqWaitLimitExpected    time.Duration
+	}{
+		{
+			name: "context deadline has exceeded",
+			parent: func(time.Time) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx, cancel
+			},
+		},
+		{
+			name: "context has a deadline, 'received at' is not set, wait limit should be one fourth of the remaining deadline from now",
+			parent: func(now time.Time) (context.Context, context.CancelFunc) {
+				return context.WithDeadline(context.Background(), now.Add(60*time.Second))
+			},
+			newReqWaitCtxExpected: true,
+			reqWaitLimitExpected:  15 * time.Second,
+		},
+		{
+			name: "context has a deadline, 'received at' is set, wait limit should be one fourth of the deadline starting from the 'received at' time",
+			parent: func(now time.Time) (context.Context, context.CancelFunc) {
+				ctx := apirequest.WithReceivedTimestamp(context.Background(), now.Add(-10*time.Second))
+				return context.WithDeadline(ctx, now.Add(50*time.Second))
+			},
+			newReqWaitCtxExpected: true,
+			reqWaitLimitExpected:  5 * time.Second, // from now
+		},
+		{
+			name:                    "context does not have any deadline, 'received at' is not set, default wait limit should be in effect from now",
+			defaultRequestWaitLimit: 15 * time.Second,
+			parent: func(time.Time) (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+			newReqWaitCtxExpected: true,
+			reqWaitLimitExpected:  15 * time.Second,
+		},
+		{
+			name:                    "context does not have any deadline, 'received at' is set, default wait limit should be in effect starting from the 'received at' time",
+			defaultRequestWaitLimit: 15 * time.Second,
+			parent: func(now time.Time) (context.Context, context.CancelFunc) {
+				ctx := apirequest.WithReceivedTimestamp(context.Background(), now.Add(-10*time.Second))
+				return context.WithCancel(ctx)
+			},
+			newReqWaitCtxExpected: true,
+			reqWaitLimitExpected:  5 * time.Second, // from now
+		},
+		{
+			name: "context has a deadline, wait limit should not exceed the hard limit of 1m",
+			parent: func(now time.Time) (context.Context, context.CancelFunc) {
+				// let 1/4th of the remaining deadline exceed the hard limit
+				return context.WithDeadline(context.Background(), now.Add(8*time.Minute))
+			},
+			newReqWaitCtxExpected: true,
+			reqWaitLimitExpected:  time.Minute,
+		},
+		{
+			name:                    "context has no deadline, wait limit should not exceed the hard limit of 1m",
+			defaultRequestWaitLimit: 2 * time.Minute, // it exceeds the hard limit
+			parent: func(now time.Time) (context.Context, context.CancelFunc) {
+				return context.WithCancel(context.Background())
+			},
+			newReqWaitCtxExpected: true,
+			reqWaitLimitExpected:  time.Minute,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now()
+			parent, cancel := test.parent(now)
+			defer cancel()
+
+			clock := clocktesting.NewFakePassiveClock(now)
+			newReqWaitCtxGot, cancelGot := getRequestWaitContext(parent, test.defaultRequestWaitLimit, clock)
+			if cancelGot == nil {
+				t.Errorf("Expected a non nil context.CancelFunc")
+				return
+			}
+			defer cancelGot()
+
+			switch {
+			case test.newReqWaitCtxExpected:
+				deadlineGot, ok := newReqWaitCtxGot.Deadline()
+				if !ok {
+					t.Errorf("Expected the new wait limit context to have a deadline")
+				}
+				if waitLimitGot := deadlineGot.Sub(now); test.reqWaitLimitExpected != waitLimitGot {
+					t.Errorf("Expected request wait limit %s, but got: %s", test.reqWaitLimitExpected, waitLimitGot)
+				}
+			default:
+				if parent != newReqWaitCtxGot {
+					t.Errorf("Expected the parent context to be returned: want: %#v, got %#v", parent, newReqWaitCtxGot)
+				}
+			}
+		})
+	}
 }

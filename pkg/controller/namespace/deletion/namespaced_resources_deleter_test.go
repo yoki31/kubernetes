@@ -17,6 +17,7 @@ limitations under the License.
 package deletion
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -34,11 +35,11 @@ import (
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes/fake"
-	scheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/metadata"
 	metadatafake "k8s.io/client-go/metadata/fake"
 	restclient "k8s.io/client-go/rest"
 	core "k8s.io/client-go/testing"
+	"k8s.io/klog/v2/ktesting"
 	api "k8s.io/kubernetes/pkg/apis/core"
 )
 
@@ -72,7 +73,7 @@ func TestFinalizeNamespaceFunc(t *testing.T) {
 		nsClient:       mockClient.CoreV1().Namespaces(),
 		finalizerToken: v1.FinalizerKubernetes,
 	}
-	d.finalizeNamespace(testNamespace)
+	d.finalizeNamespace(context.Background(), testNamespace)
 	actions := mockClient.Actions()
 	if len(actions) != 1 {
 		t.Errorf("Expected 1 mock client action, but got %v", len(actions))
@@ -201,8 +202,9 @@ func testSyncNamespaceThatIsTerminating(t *testing.T, versions *metav1.APIVersio
 			fn := func() ([]*metav1.APIResourceList, error) {
 				return resources, testInput.gvrError
 			}
-			d := NewNamespacedResourcesDeleter(mockClient.CoreV1().Namespaces(), metadataClient, mockClient.CoreV1(), fn, v1.FinalizerKubernetes)
-			if err := d.Delete(testInput.testNamespace.Name); !matchErrors(err, testInput.expectErrorOnDelete) {
+			_, ctx := ktesting.NewTestContext(t)
+			d := NewNamespacedResourcesDeleter(ctx, mockClient.CoreV1().Namespaces(), metadataClient, mockClient.CoreV1(), fn, v1.FinalizerKubernetes)
+			if err := d.Delete(ctx, testInput.testNamespace.Name); !matchErrors(err, testInput.expectErrorOnDelete) {
 				t.Errorf("expected error %q when syncing namespace, got %q, %v", testInput.expectErrorOnDelete, err, testInput.expectErrorOnDelete == err)
 			}
 
@@ -253,7 +255,7 @@ func testSyncNamespaceThatIsTerminating(t *testing.T, versions *metav1.APIVersio
 func TestRetryOnConflictError(t *testing.T) {
 	mockClient := &fake.Clientset{}
 	numTries := 0
-	retryOnce := func(namespace *v1.Namespace) (*v1.Namespace, error) {
+	retryOnce := func(ctx context.Context, namespace *v1.Namespace) (*v1.Namespace, error) {
 		numTries++
 		if numTries <= 1 {
 			return namespace, errors.NewConflict(api.Resource("namespaces"), namespace.Name, fmt.Errorf("ERROR"))
@@ -264,7 +266,7 @@ func TestRetryOnConflictError(t *testing.T) {
 	d := namespacedResourcesDeleter{
 		nsClient: mockClient.CoreV1().Namespaces(),
 	}
-	_, err := d.retryOnConflictError(namespace, retryOnce)
+	_, err := d.retryOnConflictError(context.Background(), namespace, retryOnce)
 	if err != nil {
 		t.Errorf("Unexpected error %v", err)
 	}
@@ -298,9 +300,10 @@ func TestSyncNamespaceThatIsActive(t *testing.T) {
 	fn := func() ([]*metav1.APIResourceList, error) {
 		return testResources(), nil
 	}
-	d := NewNamespacedResourcesDeleter(mockClient.CoreV1().Namespaces(), nil, mockClient.CoreV1(),
+	_, ctx := ktesting.NewTestContext(t)
+	d := NewNamespacedResourcesDeleter(ctx, mockClient.CoreV1().Namespaces(), nil, mockClient.CoreV1(),
 		fn, v1.FinalizerKubernetes)
-	err := d.Delete(testNamespace.Name)
+	err := d.Delete(ctx, testNamespace.Name)
 	if err != nil {
 		t.Errorf("Unexpected error when synching namespace %v", err)
 	}
@@ -420,7 +423,7 @@ func TestDeleteEncounters404(t *testing.T) {
 		}
 		return false, nil, nil
 	}
-	mockMetadataClient := metadatafake.NewSimpleMetadataClient(scheme.Scheme)
+	mockMetadataClient := metadatafake.NewSimpleMetadataClient(metadatafake.NewTestScheme())
 	mockMetadataClient.PrependReactor("delete-collection", "flakes", ns1FlakesNotFound)
 	mockMetadataClient.PrependReactor("list", "flakes", ns1FlakesNotFound)
 
@@ -430,12 +433,12 @@ func TestDeleteEncounters404(t *testing.T) {
 			APIResources: []metav1.APIResource{{Name: "flakes", Namespaced: true, Kind: "Flake", Verbs: []string{"get", "list", "delete", "deletecollection", "create", "update"}}},
 		}}, nil
 	}
-
-	d := NewNamespacedResourcesDeleter(mockClient.CoreV1().Namespaces(), mockMetadataClient, mockClient.CoreV1(), resourcesFn, v1.FinalizerKubernetes)
+	_, ctx := ktesting.NewTestContext(t)
+	d := NewNamespacedResourcesDeleter(ctx, mockClient.CoreV1().Namespaces(), mockMetadataClient, mockClient.CoreV1(), resourcesFn, v1.FinalizerKubernetes)
 
 	// Delete ns1 and get NotFound errors for the flakes resource
 	mockMetadataClient.ClearActions()
-	if err := d.Delete(ns1.Name); err != nil {
+	if err := d.Delete(ctx, ns1.Name); err != nil {
 		t.Fatal(err)
 	}
 	if len(mockMetadataClient.Actions()) != 3 ||
@@ -450,7 +453,7 @@ func TestDeleteEncounters404(t *testing.T) {
 
 	// Delete ns2
 	mockMetadataClient.ClearActions()
-	if err := d.Delete(ns2.Name); err != nil {
+	if err := d.Delete(ctx, ns2.Name); err != nil {
 		t.Fatal(err)
 	}
 	if len(mockMetadataClient.Actions()) != 2 ||

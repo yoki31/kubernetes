@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/lithammer/dedent"
 	"github.com/pkg/errors"
@@ -76,6 +77,8 @@ func NewKubeletStartPhase() workflow.Phase {
 			options.TokenDiscoverySkipCAHash,
 			options.TLSBootstrapToken,
 			options.TokenStr,
+			options.Patches,
+			options.DryRun,
 		},
 	}
 }
@@ -170,11 +173,11 @@ func runKubeletStartJoinPhase(c workflow.RunData) (returnErr error) {
 		klog.V(1).Infoln("[kubelet-start] Stopping the kubelet")
 		kubeletphase.TryStopKubelet()
 	} else {
-		fmt.Println("[dryrun] Would stop the kubelet")
+		fmt.Println("[kubelet-start] Would stop the kubelet")
 	}
 
 	// Write the configuration for the kubelet (using the bootstrap token credentials) to disk so the kubelet can start
-	if err := kubeletphase.WriteConfigToDisk(&initCfg.ClusterConfiguration, data.KubeletDir()); err != nil {
+	if err := kubeletphase.WriteConfigToDisk(&initCfg.ClusterConfiguration, data.KubeletDir(), data.PatchesDir(), data.OutputWriter()); err != nil {
 		return err
 	}
 
@@ -187,7 +190,7 @@ func runKubeletStartJoinPhase(c workflow.RunData) (returnErr error) {
 	}
 
 	if data.DryRun() {
-		fmt.Println("[dryrun] Would start the kubelet")
+		fmt.Println("[kubelet-start] Would start the kubelet")
 		// If we're dry-running, print the kubelet config manifests and print static pod manifests if joining a control plane.
 		// TODO: think of a better place to move this call - e.g. a hidden phase.
 		if err := dryrunutil.PrintFilesIfDryRunning(cfg.ControlPlane != nil, data.ManifestDir(), data.OutputWriter()); err != nil {
@@ -203,8 +206,14 @@ func runKubeletStartJoinPhase(c workflow.RunData) (returnErr error) {
 	// Now the kubelet will perform the TLS Bootstrap, transforming /etc/kubernetes/bootstrap-kubelet.conf to /etc/kubernetes/kubelet.conf
 	// Wait for the kubelet to create the /etc/kubernetes/kubelet.conf kubeconfig file. If this process
 	// times out, display a somewhat user-friendly message.
-	waiter := apiclient.NewKubeWaiter(nil, kubeadmconstants.TLSBootstrapTimeout, os.Stdout)
-	if err := waiter.WaitForKubeletAndFunc(waitForTLSBootstrappedClient); err != nil {
+	waiter := apiclient.NewKubeWaiter(nil, 0, os.Stdout)
+	waiter.SetTimeout(cfg.Timeouts.KubeletHealthCheck.Duration)
+	if err := waiter.WaitForKubelet(); err != nil {
+		fmt.Printf(kubeadmJoinFailMsg, err)
+		return err
+	}
+
+	if err := waitForTLSBootstrappedClient(cfg.Timeouts.TLSBootstrap.Duration); err != nil {
 		fmt.Printf(kubeadmJoinFailMsg, err)
 		return err
 	}
@@ -224,15 +233,17 @@ func runKubeletStartJoinPhase(c workflow.RunData) (returnErr error) {
 }
 
 // waitForTLSBootstrappedClient waits for the /etc/kubernetes/kubelet.conf file to be available
-func waitForTLSBootstrappedClient() error {
-	fmt.Println("[kubelet-start] Waiting for the kubelet to perform the TLS Bootstrap...")
+func waitForTLSBootstrappedClient(timeout time.Duration) error {
+	fmt.Println("[kubelet-start] Waiting for the kubelet to perform the TLS Bootstrap")
 
 	// Loop on every falsy return. Return with an error if raised. Exit successfully if true is returned.
-	return wait.PollImmediate(kubeadmconstants.TLSBootstrapRetryInterval, kubeadmconstants.TLSBootstrapTimeout, func() (bool, error) {
-		// Check that we can create a client set out of the kubelet kubeconfig. This ensures not
-		// only that the kubeconfig file exists, but that other files required by it also exist (like
-		// client certificate and key)
-		_, err := kubeconfigutil.ClientSetFromFile(kubeadmconstants.GetKubeletKubeConfigPath())
-		return (err == nil), nil
-	})
+	return wait.PollUntilContextTimeout(context.Background(),
+		kubeadmconstants.TLSBootstrapRetryInterval, timeout,
+		true, func(_ context.Context) (bool, error) {
+			// Check that we can create a client set out of the kubelet kubeconfig. This ensures not
+			// only that the kubeconfig file exists, but that other files required by it also exist (like
+			// client certificate and key)
+			_, err := kubeconfigutil.ClientSetFromFile(kubeadmconstants.GetKubeletKubeConfigPath())
+			return (err == nil), nil
+		})
 }

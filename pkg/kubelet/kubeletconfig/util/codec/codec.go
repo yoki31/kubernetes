@@ -17,6 +17,7 @@ limitations under the License.
 package codec
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"k8s.io/klog/v2"
@@ -24,11 +25,11 @@ import (
 	// ensure the core apis are installed
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/component-base/codec"
-	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/apis/config/scheme"
 	kubeletconfigv1beta1 "k8s.io/kubernetes/pkg/kubelet/apis/config/v1beta1"
@@ -60,24 +61,6 @@ func NewKubeletconfigYAMLEncoder(targetVersion schema.GroupVersion) (runtime.Enc
 		return nil, fmt.Errorf("unsupported media type %q", mediaType)
 	}
 	return codecs.EncoderForVersion(info.Serializer, targetVersion), nil
-}
-
-// NewYAMLEncoder generates a new runtime.Encoder that encodes objects to YAML.
-func NewYAMLEncoder(groupName string) (runtime.Encoder, error) {
-	// encode to YAML
-	mediaType := "application/yaml"
-	info, ok := runtime.SerializerInfoForMediaType(legacyscheme.Codecs.SupportedMediaTypes(), mediaType)
-	if !ok {
-		return nil, fmt.Errorf("unsupported media type %q", mediaType)
-	}
-
-	versions := legacyscheme.Scheme.PrioritizedVersionsForGroup(groupName)
-	if len(versions) == 0 {
-		return nil, fmt.Errorf("no enabled versions for group %q", groupName)
-	}
-
-	// the "best" version supposedly comes first in the list returned from legacyscheme.Registry.EnabledVersionsForGroup.
-	return legacyscheme.Codecs.EncoderForVersion(info.Serializer, versions[0]), nil
 }
 
 // DecodeKubeletConfiguration decodes a serialized KubeletConfiguration to the internal type.
@@ -123,4 +106,17 @@ func DecodeKubeletConfiguration(kubeletCodecs *serializer.CodecFactory, data []b
 	}
 
 	return internalKC, nil
+}
+
+// DecodeKubeletConfigurationIntoJSON decodes a serialized KubeletConfiguration to the internal type.
+func DecodeKubeletConfigurationIntoJSON(kubeletCodecs *serializer.CodecFactory, data []byte) ([]byte, error) {
+	// The UniversalDecoder runs defaulting and returns the internal type by default.
+	obj, _, err := kubeletCodecs.UniversalDecoder().Decode(data, nil, &unstructured.Unstructured{})
+	if err != nil {
+		return nil, err
+	}
+
+	objT := obj.(*unstructured.Unstructured)
+
+	return json.Marshal(objT.Object)
 }

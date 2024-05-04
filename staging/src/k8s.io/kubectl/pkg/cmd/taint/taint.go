@@ -24,7 +24,6 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/explain"
-	"k8s.io/kubectl/pkg/util"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -34,10 +33,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -47,8 +48,8 @@ type TaintOptions struct {
 	PrintFlags *genericclioptions.PrintFlags
 	ToPrinter  func(string) (printers.ResourcePrinter, error)
 
-	DryRunStrategy cmdutil.DryRunStrategy
-	DryRunVerifier *resource.DryRunVerifier
+	DryRunStrategy      cmdutil.DryRunStrategy
+	ValidationDirective string
 
 	resources      []string
 	taintsToAdd    []v1.Taint
@@ -61,7 +62,7 @@ type TaintOptions struct {
 
 	ClientForMapping func(*meta.RESTMapping) (resource.RESTClient, error)
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 
 	Mapper meta.RESTMapper
 }
@@ -88,14 +89,14 @@ var (
 		# Remove from node 'foo' all the taints with key 'dedicated'
 		kubectl taint nodes foo dedicated-
 
-		# Add a taint with key 'dedicated' on nodes having label mylabel=X
+		# Add a taint with key 'dedicated' on nodes having label myLabel=X
 		kubectl taint node -l myLabel=X  dedicated=foo:PreferNoSchedule
 
 		# Add to node 'foo' a taint with key 'bar' and no value
 		kubectl taint nodes foo bar:NoSchedule`))
 )
 
-func NewCmdTaint(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdTaint(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	options := &TaintOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("tainted").WithTypeSetter(scheme.Scheme),
 		IOStreams:  streams,
@@ -109,7 +110,7 @@ func NewCmdTaint(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.
 		Short:                 i18n.T("Update the taints on one or more nodes"),
 		Long:                  fmt.Sprintf(taintLong, validation.DNS1123SubdomainMaxLength, validation.LabelValueMaxLength),
 		Example:               taintExample,
-		ValidArgsFunction:     util.SpecifiedResourceTypeAndNameCompletionFunc(f, validArgs),
+		ValidArgsFunction:     completion.SpecifiedResourceTypeAndNameCompletionFunc(f, validArgs),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(options.Complete(f, cmd, args))
 			cmdutil.CheckErr(options.Validate())
@@ -119,9 +120,8 @@ func NewCmdTaint(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.
 
 	options.PrintFlags.AddFlags(cmd)
 	cmdutil.AddDryRunFlag(cmd)
-
 	cmdutil.AddValidateFlags(cmd)
-	cmd.Flags().StringVarP(&options.selector, "selector", "l", options.selector, "Selector (label query) to filter on, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2)")
+	cmdutil.AddLabelSelectorFlagVar(cmd, &options.selector)
 	cmd.Flags().BoolVar(&options.overwrite, "overwrite", options.overwrite, "If true, allow taints to be overwritten, otherwise reject taint updates that overwrite existing taints.")
 	cmd.Flags().BoolVar(&options.all, "all", options.all, "Select all nodes in the cluster")
 	cmdutil.AddFieldManagerFlagVar(cmd, &options.fieldManager, "kubectl-taint")
@@ -144,12 +144,12 @@ func (o *TaintOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
+	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.DryRunStrategy)
+
+	o.ValidationDirective, err = cmdutil.GetValidationDirective(cmd)
 	if err != nil {
 		return err
 	}
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
-	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.DryRunStrategy)
 
 	// retrieves resource and taint args from args
 	// also checks args to verify that all resources are specified before taints
@@ -327,19 +327,15 @@ func (o TaintOptions) RunTaint() error {
 		}
 
 		mapping := info.ResourceMapping()
-		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(mapping.GroupVersionKind); err != nil {
-				return err
-			}
-		}
 		client, err := o.ClientForMapping(mapping)
 		if err != nil {
 			return err
 		}
 		helper := resource.
 			NewHelper(client, mapping).
+			DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
 			WithFieldManager(o.fieldManager).
-			DryRun(o.DryRunStrategy == cmdutil.DryRunServer)
+			WithFieldValidation(o.ValidationDirective)
 
 		var outputObj runtime.Object
 		if createdPatch {

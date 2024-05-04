@@ -18,16 +18,19 @@ package debug
 
 import (
 	"fmt"
-	"github.com/spf13/cobra"
 	"strings"
 	"testing"
 	"time"
 
+	cmdutil "k8s.io/kubectl/pkg/cmd/util"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/spf13/cobra"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
 	"k8s.io/utils/pointer"
 )
@@ -53,6 +56,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 				Container:  "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.EphemeralContainer{
 				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -70,6 +74,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 				Image:           "busybox",
 				PullPolicy:      corev1.PullIfNotPresent,
 				TargetContainer: "myapp",
+				Profile:         ProfileLegacy,
 			},
 			expected: &corev1.EphemeralContainer{
 				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -88,6 +93,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 				Container:  "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.EphemeralContainer{
 				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -107,6 +113,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 				Args:       []string{"echo", "one", "two", "three"},
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.EphemeralContainer{
 				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -123,6 +130,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 			opts: &DebugOptions{
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.EphemeralContainer{
 				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
@@ -138,6 +146,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 			opts: &DebugOptions{
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
@@ -162,6 +171,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 			opts: &DebugOptions{
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
@@ -194,6 +204,7 @@ func TestGenerateDebugContainer(t *testing.T) {
 			opts: &DebugOptions{
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
@@ -225,15 +236,127 @@ func TestGenerateDebugContainer(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "general profile",
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileGeneral,
+			},
+			expected: &corev1.EphemeralContainer{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name:                     "debugger-1",
+					Image:                    "busybox",
+					ImagePullPolicy:          corev1.PullIfNotPresent,
+					TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Add: []corev1.Capability{"SYS_PTRACE"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "baseline profile",
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileBaseline,
+			},
+			expected: &corev1.EphemeralContainer{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name:                     "debugger-1",
+					Image:                    "busybox",
+					ImagePullPolicy:          corev1.PullIfNotPresent,
+					TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+				},
+			},
+		},
+		{
+			name: "restricted profile",
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+			},
+			expected: &corev1.EphemeralContainer{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name:                     "debugger-1",
+					Image:                    "busybox",
+					ImagePullPolicy:          corev1.PullIfNotPresent,
+					TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+					SecurityContext: &corev1.SecurityContext{
+						RunAsNonRoot: pointer.Bool(true),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						AllowPrivilegeEscalation: pointer.Bool(false),
+						SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
+					},
+				},
+			},
+		},
+		{
+			name: "netadmin profile",
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileNetadmin,
+			},
+			expected: &corev1.EphemeralContainer{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name:                     "debugger-1",
+					Image:                    "busybox",
+					ImagePullPolicy:          corev1.PullIfNotPresent,
+					TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "sysadmin profile",
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileSysadmin,
+			},
+			expected: &corev1.EphemeralContainer{
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name:                     "debugger-1",
+					Image:                    "busybox",
+					ImagePullPolicy:          corev1.PullIfNotPresent,
+					TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+					SecurityContext: &corev1.SecurityContext{
+						Privileged: pointer.Bool(true),
+					},
+				},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.opts.IOStreams = genericclioptions.NewTestIOStreamsDiscard()
+			tc.opts.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
 			suffixCounter = 0
 
 			if tc.pod == nil {
 				tc.pod = &corev1.Pod{}
 			}
-			if diff := cmp.Diff(tc.expected, tc.opts.generateDebugContainer(tc.pod)); diff != "" {
+
+			applier, err := NewProfileApplier(tc.opts.Profile)
+			if err != nil {
+				t.Fatalf("failed to create profile applier: %s: %v", tc.opts.Profile, err)
+			}
+			tc.opts.Applier = applier
+
+			_, debugContainer, err := tc.opts.generateDebugContainer(tc.pod)
+			if err != nil {
+				t.Fatalf("fail to generate debug container: %v", err)
+			}
+			if diff := cmp.Diff(tc.expected, debugContainer); diff != "" {
 				t.Error("unexpected diff in generated object: (-want +got):\n", diff)
 			}
 		})
@@ -260,6 +383,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Container:  "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -297,6 +421,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
 				SameNode:   true,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -334,6 +459,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Container:  "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -345,7 +471,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 						"test": "test",
 					},
 					ResourceVersion:   "1",
-					CreationTimestamp: metav1.Time{time.Now()},
+					CreationTimestamp: metav1.Time{Time: time.Now()},
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -380,6 +506,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Container:  "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -423,6 +550,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 					Name:  "TEST",
 					Value: "test",
 				}},
+				Profile: ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -467,6 +595,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Args:       []string{"/bin/echo", "one", "two", "three"},
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -509,6 +638,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				ArgsOnly:   true,
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -549,6 +679,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Container:  "debugger",
 				Args:       []string{"sleep", "1d"},
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -589,6 +720,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				CopyTo:     "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -627,6 +759,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				CopyTo:     "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -665,6 +798,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				CopyTo:     "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -719,6 +853,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				CopyTo:     "debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -772,6 +907,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				PullPolicy:            corev1.PullIfNotPresent,
 				ShareProcesses:        true,
 				shareProcessedChanged: true,
+				Profile:               ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -801,7 +937,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
 						},
 					},
-					ShareProcessNamespace: pointer.BoolPtr(true),
+					ShareProcessNamespace: pointer.Bool(true),
 				},
 			},
 		},
@@ -813,6 +949,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Container:   "app",
 				Image:       "busybox",
 				TargetNames: []string{"myapp"},
+				Profile:     ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "myapp"},
@@ -839,6 +976,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				CopyTo:    "myapp-copy",
 				Container: "app",
 				SetImages: map[string]string{"app": "busybox"},
+				Profile:   ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -868,6 +1006,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 			opts: &DebugOptions{
 				CopyTo:    "myapp-copy",
 				SetImages: map[string]string{"*": "busybox"},
+				Profile:   ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -897,6 +1036,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 			opts: &DebugOptions{
 				CopyTo:    "myapp-copy",
 				SetImages: map[string]string{"*": "busybox", "app": "app-debugger"},
+				Profile:   ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -931,6 +1071,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				Interactive: true,
 				TargetNames: []string{"mypod"},
 				TTY:         true,
+				Profile:     ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "mypod"},
@@ -974,6 +1115,7 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				ShareProcesses: true,
 				TargetNames:    []string{"mypod"},
 				TTY:            true,
+				Profile:        ProfileLegacy,
 			},
 			havePod: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "mypod"},
@@ -1001,9 +1143,224 @@ func TestGeneratePodCopyWithDebugContainer(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "general profile",
+			opts: &DebugOptions{
+				CopyTo:     "debugger",
+				Container:  "debugger",
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileGeneral,
+			},
+			havePod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "debugger",
+						},
+					},
+					NodeName: "node-1",
+				},
+			},
+			wantPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "debugger",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "debugger",
+							Image:           "busybox",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{"SYS_PTRACE"},
+								},
+							},
+						},
+					},
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
+		{
+			name: "baseline profile",
+			opts: &DebugOptions{
+				CopyTo:     "debugger",
+				Container:  "debugger",
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileBaseline,
+			},
+			havePod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "debugger",
+						},
+					},
+					NodeName: "node-1",
+				},
+			},
+			wantPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "debugger",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "debugger",
+							Image:           "busybox",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+						},
+					},
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
+		{
+			name: "baseline profile not share process when user explicitly disables it",
+			opts: &DebugOptions{
+				CopyTo:                "debugger",
+				Container:             "debugger",
+				Image:                 "busybox",
+				PullPolicy:            corev1.PullIfNotPresent,
+				Profile:               ProfileBaseline,
+				ShareProcesses:        false,
+				shareProcessedChanged: true,
+			},
+			havePod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "debugger",
+						},
+					},
+					NodeName: "node-1",
+				},
+			},
+			wantPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "debugger",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "debugger",
+							Image:           "busybox",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+						},
+					},
+					ShareProcessNamespace: pointer.Bool(false),
+				},
+			},
+		},
+		{
+			name: "restricted profile",
+			opts: &DebugOptions{
+				CopyTo:     "debugger",
+				Container:  "debugger",
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+			},
+			havePod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "debugger",
+						},
+					},
+					NodeName: "node-1",
+				},
+			},
+			wantPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "debugger",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "debugger",
+							Image:           "busybox",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot: pointer.Bool(true),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
+							},
+						},
+					},
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
+		{
+			name: "netadmin profile",
+			opts: &DebugOptions{
+				CopyTo:     "debugger",
+				Container:  "debugger",
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileNetadmin,
+			},
+			havePod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "target",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name: "debugger",
+						},
+					},
+					NodeName: "node-1",
+				},
+			},
+			wantPod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "debugger",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:            "debugger",
+							Image:           "busybox",
+							ImagePullPolicy: corev1.PullIfNotPresent,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+								},
+							},
+						},
+					},
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.opts.IOStreams = genericclioptions.NewTestIOStreamsDiscard()
+			var err error
+			tc.opts.Applier, err = NewProfileApplier(tc.opts.Profile)
+			if err != nil {
+				t.Fatalf("Fail to create profile applier: %s: %v", tc.opts.Profile, err)
+			}
+			tc.opts.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
 			suffixCounter = 0
 
 			if tc.havePod == nil {
@@ -1041,6 +1398,7 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 			opts: &DebugOptions{
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1094,6 +1452,7 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 				Container:  "custom-debugger",
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1149,6 +1508,7 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 				Args:       []string{"echo", "one", "two", "three"},
 				Image:      "busybox",
 				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileLegacy,
 			},
 			expected: &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1191,12 +1551,205 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "general profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileGeneral,
+			},
+			expected: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-debugger-node-XXX-1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullIfNotPresent,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									MountPath: "/host",
+									Name:      "host-root",
+								},
+							},
+						},
+					},
+					HostIPC:       true,
+					HostNetwork:   true,
+					HostPID:       true,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes: []corev1.Volume{
+						{
+							Name: "host-root",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{Path: "/"},
+							},
+						},
+					},
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "baseline profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileBaseline,
+			},
+			expected: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-debugger-node-XXX-1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullIfNotPresent,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+						},
+					},
+					HostIPC:       false,
+					HostNetwork:   false,
+					HostPID:       false,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes:       nil,
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "restricted profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+			},
+			expected: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-debugger-node-XXX-1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullIfNotPresent,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot: pointer.Bool(true),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
+							},
+						},
+					},
+					HostIPC:       false,
+					HostNetwork:   false,
+					HostPID:       false,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes:       nil,
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "netadmin profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileNetadmin,
+			},
+			expected: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-debugger-node-XXX-1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullIfNotPresent,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+								},
+							},
+						},
+					},
+					HostIPC:       true,
+					HostNetwork:   true,
+					HostPID:       true,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes:       nil,
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.opts.IOStreams = genericclioptions.NewTestIOStreamsDiscard()
+			var err error
+			tc.opts.Applier, err = NewProfileApplier(tc.opts.Profile)
+			if err != nil {
+				t.Fatalf("Fail to create profile applier: %s: %v", tc.opts.Profile, err)
+			}
+			tc.opts.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
 			suffixCounter = 0
 
-			pod := tc.opts.generateNodeDebugPod(tc.node)
+			pod, err := tc.opts.generateNodeDebugPod(tc.node)
+			if err != nil {
+				t.Fatalf("Fail to generate node debug pod: %v", err)
+			}
 			if diff := cmp.Diff(tc.expected, pod); diff != "" {
 				t.Error("unexpected diff in generated object: (-want +got):\n", diff)
 			}
@@ -1204,13 +1757,696 @@ func TestGenerateNodeDebugPod(t *testing.T) {
 	}
 }
 
+func TestGenerateNodeDebugPodCustomProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		node     *corev1.Node
+		opts     *DebugOptions
+		expected *corev1.Pod
+	}{
+		{
+			name: "baseline profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileBaseline,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-debugger-node-XXX-1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullNever,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							Stdin:                    true,
+							TTY:                      false,
+							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot: pointer.Bool(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+						},
+					},
+					HostIPC:       false,
+					HostNetwork:   false,
+					HostPID:       false,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes:       nil,
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "restricted profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+				},
+			},
+			expected: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-debugger-node-XXX-1",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullNever,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							Stdin:                    true,
+							TTY:                      false,
+							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot: pointer.Bool(true),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								SeccompProfile:           &corev1.SeccompProfile{Type: "RuntimeDefault"},
+							},
+						},
+					},
+					HostIPC:       false,
+					HostNetwork:   false,
+					HostPID:       false,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes:       nil,
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "netadmin profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileNetadmin,
+				CustomProfile: &corev1.Container{
+					Env: []corev1.EnvVar{
+						{
+							Name:  "TEST_KEY",
+							Value: "TEST_VALUE",
+						},
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullIfNotPresent,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							Env: []corev1.EnvVar{
+								{
+									Name:  "TEST_KEY",
+									Value: "TEST_VALUE",
+								},
+							},
+							VolumeMounts: nil,
+							SecurityContext: &corev1.SecurityContext{
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{"NET_ADMIN", "NET_RAW"},
+								},
+							},
+						},
+					},
+					HostIPC:       true,
+					HostNetwork:   true,
+					HostPID:       true,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes:       nil,
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "sysadmin profile",
+			node: &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "node-XXX",
+				},
+			},
+			opts: &DebugOptions{
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileSysadmin,
+				CustomProfile: &corev1.Container{
+					Env: []corev1.EnvVar{
+						{
+							Name:  "TEST_KEY",
+							Value: "TEST_VALUE",
+						},
+					},
+					VolumeMounts: []corev1.VolumeMount{
+						{
+							Name:      "host-root",
+							ReadOnly:  true,
+							MountPath: "/host",
+						},
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:                     "debugger",
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullIfNotPresent,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							Env: []corev1.EnvVar{
+								{
+									Name:  "TEST_KEY",
+									Value: "TEST_VALUE",
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "host-root",
+									ReadOnly:  true,
+									MountPath: "/host",
+								},
+							},
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: pointer.Bool(true),
+							},
+						},
+					},
+					HostIPC:       true,
+					HostNetwork:   true,
+					HostPID:       true,
+					NodeName:      "node-XXX",
+					RestartPolicy: corev1.RestartPolicyNever,
+					Volumes: []corev1.Volume{
+						{
+							Name: "host-root",
+							VolumeSource: corev1.VolumeSource{
+								HostPath: &corev1.HostPathVolumeSource{
+									Path: "/",
+								},
+							},
+						},
+					},
+					Tolerations: []corev1.Toleration{
+						{
+							Operator: corev1.TolerationOpExists,
+						},
+					},
+				},
+			},
+		},
+	} {
+
+		t.Run(tc.name, func(t *testing.T) {
+			cmdtesting.WithAlphaEnvs([]cmdutil.FeatureGate{cmdutil.DebugCustomProfile}, t, func(t *testing.T) {
+				var err error
+				tc.opts.Applier, err = NewProfileApplier(tc.opts.Profile)
+				if err != nil {
+					t.Fatalf("Fail to create profile applier: %s: %v", tc.opts.Profile, err)
+				}
+				tc.opts.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
+
+				pod, err := tc.opts.generateNodeDebugPod(tc.node)
+				if err != nil {
+					t.Fatalf("Fail to generate node debug pod: %v", err)
+				}
+				tc.expected.Name = pod.Name
+				if diff := cmp.Diff(tc.expected, pod); diff != "" {
+					t.Error("unexpected diff in generated object: (-want +got):\n", diff)
+				}
+			})
+		})
+	}
+}
+
+func TestGenerateCopyDebugPodCustomProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		copyPod  *corev1.Pod
+		opts     *DebugOptions
+		expected *corev1.Pod
+	}{
+		{
+			name: "baseline profile",
+			copyPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+				},
+			},
+			opts: &DebugOptions{
+				SameNode:   true,
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileBaseline,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+					Containers: []corev1.Container{
+						{
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullNever,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							Stdin:                    true,
+							TTY:                      false,
+							SecurityContext: &corev1.SecurityContext{
+								RunAsNonRoot: pointer.Bool(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+						},
+					},
+					HostIPC:               false,
+					HostNetwork:           false,
+					HostPID:               false,
+					Volumes:               nil,
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
+		{
+			name: "restricted profile",
+			copyPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+				},
+			},
+			opts: &DebugOptions{
+				SameNode:   true,
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+					Containers: []corev1.Container{
+						{
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullNever,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							Stdin:                    true,
+							TTY:                      false,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								RunAsNonRoot:             pointer.Bool(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								SeccompProfile: &corev1.SeccompProfile{
+									Type:             corev1.SeccompProfileTypeRuntimeDefault,
+									LocalhostProfile: nil,
+								},
+							},
+						},
+					},
+					HostIPC:               false,
+					HostNetwork:           false,
+					HostPID:               false,
+					Volumes:               nil,
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
+		{
+			name: "sysadmin profile",
+			copyPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+				},
+			},
+			opts: &DebugOptions{
+				SameNode:   true,
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+					Containers: []corev1.Container{
+						{
+							Image:                    "busybox",
+							ImagePullPolicy:          corev1.PullNever,
+							TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+							VolumeMounts:             nil,
+							Stdin:                    true,
+							TTY:                      false,
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: pointer.Bool(false),
+								RunAsNonRoot:             pointer.Bool(false),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+								SeccompProfile: &corev1.SeccompProfile{
+									Type:             corev1.SeccompProfileTypeRuntimeDefault,
+									LocalhostProfile: nil,
+								},
+							},
+						},
+					},
+					HostIPC:               false,
+					HostNetwork:           false,
+					HostPID:               false,
+					Volumes:               nil,
+					ShareProcessNamespace: pointer.Bool(true),
+				},
+			},
+		},
+	} {
+
+		t.Run(tc.name, func(t *testing.T) {
+			cmdtesting.WithAlphaEnvs([]cmdutil.FeatureGate{cmdutil.DebugCustomProfile}, t, func(t *testing.T) {
+				var err error
+				tc.opts.Applier, err = NewProfileApplier(tc.opts.Profile)
+				if err != nil {
+					t.Fatalf("Fail to create profile applier: %s: %v", tc.opts.Profile, err)
+				}
+				tc.opts.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
+
+				pod, dc, err := tc.opts.generatePodCopyWithDebugContainer(tc.copyPod)
+				if err != nil {
+					t.Fatalf("Fail to generate node debug pod: %v", err)
+				}
+				tc.expected.Spec.Containers[0].Name = dc
+				if diff := cmp.Diff(tc.expected, pod); diff != "" {
+					t.Error("unexpected diff in generated object: (-want +got):\n", diff)
+				}
+			})
+		})
+	}
+}
+
+func TestGenerateEphemeralDebugPodCustomProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		copyPod  *corev1.Pod
+		opts     *DebugOptions
+		expected *corev1.Pod
+	}{
+		{
+			name: "baseline profile",
+			copyPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+				},
+			},
+			opts: &DebugOptions{
+				SameNode:   true,
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileBaseline,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:                     "debugger-1",
+								Image:                    "busybox",
+								ImagePullPolicy:          corev1.PullNever,
+								TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+								VolumeMounts:             nil,
+								Stdin:                    true,
+								TTY:                      false,
+								SecurityContext: &corev1.SecurityContext{
+									RunAsNonRoot: pointer.Bool(false),
+									Capabilities: &corev1.Capabilities{
+										Drop: []corev1.Capability{"ALL"},
+									},
+								},
+							},
+						},
+					},
+					HostIPC:     false,
+					HostNetwork: false,
+					HostPID:     false,
+					Volumes:     nil,
+				},
+			},
+		},
+		{
+			name: "restricted profile",
+			copyPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+				},
+			},
+			opts: &DebugOptions{
+				SameNode:   true,
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:                     "debugger-1",
+								Image:                    "busybox",
+								ImagePullPolicy:          corev1.PullNever,
+								TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+								VolumeMounts:             nil,
+								Stdin:                    true,
+								TTY:                      false,
+								SecurityContext: &corev1.SecurityContext{
+									AllowPrivilegeEscalation: pointer.Bool(false),
+									RunAsNonRoot:             pointer.Bool(false),
+									Capabilities: &corev1.Capabilities{
+										Drop: []corev1.Capability{"ALL"},
+									},
+									SeccompProfile: &corev1.SeccompProfile{
+										Type:             corev1.SeccompProfileTypeRuntimeDefault,
+										LocalhostProfile: nil,
+									},
+								},
+							},
+						},
+					},
+					HostIPC:     false,
+					HostNetwork: false,
+					HostPID:     false,
+					Volumes:     nil,
+				},
+			},
+		},
+		{
+			name: "sysadmin profile",
+			copyPod: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+				},
+			},
+			opts: &DebugOptions{
+				SameNode:   true,
+				Image:      "busybox",
+				PullPolicy: corev1.PullIfNotPresent,
+				Profile:    ProfileRestricted,
+				CustomProfile: &corev1.Container{
+					ImagePullPolicy: corev1.PullNever,
+					Stdin:           true,
+					TTY:             false,
+					SecurityContext: &corev1.SecurityContext{
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: pointer.Bool(false),
+					},
+				},
+			},
+			expected: &corev1.Pod{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "test",
+					NodeName:           "test-node",
+					EphemeralContainers: []corev1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+								Name:                     "debugger-1",
+								Image:                    "busybox",
+								ImagePullPolicy:          corev1.PullNever,
+								TerminationMessagePolicy: corev1.TerminationMessageReadFile,
+								VolumeMounts:             nil,
+								Stdin:                    true,
+								TTY:                      false,
+								SecurityContext: &corev1.SecurityContext{
+									AllowPrivilegeEscalation: pointer.Bool(false),
+									RunAsNonRoot:             pointer.Bool(false),
+									Capabilities: &corev1.Capabilities{
+										Drop: []corev1.Capability{"ALL"},
+									},
+									SeccompProfile: &corev1.SeccompProfile{
+										Type:             corev1.SeccompProfileTypeRuntimeDefault,
+										LocalhostProfile: nil,
+									},
+								},
+							},
+						},
+					},
+					HostIPC:     false,
+					HostNetwork: false,
+					HostPID:     false,
+					Volumes:     nil,
+				},
+			},
+		},
+	} {
+
+		t.Run(tc.name, func(t *testing.T) {
+			cmdtesting.WithAlphaEnvs([]cmdutil.FeatureGate{cmdutil.DebugCustomProfile}, t, func(t *testing.T) {
+				var err error
+				tc.opts.Applier, err = NewProfileApplier(tc.opts.Profile)
+				if err != nil {
+					t.Fatalf("Fail to create profile applier: %s: %v", tc.opts.Profile, err)
+				}
+				tc.opts.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
+
+				pod, ec, err := tc.opts.generateDebugContainer(tc.copyPod)
+				if err != nil {
+					t.Fatalf("Fail to generate node debug pod: %v", err)
+				}
+				tc.expected.Spec.EphemeralContainers[0].Name = ec.Name
+				if diff := cmp.Diff(tc.expected, pod); diff != "" {
+					t.Error("unexpected diff in generated object: (-want +got):\n", diff)
+				}
+			})
+		})
+	}
+}
+
 func TestCompleteAndValidate(t *testing.T) {
 	tf := cmdtesting.NewTestFactory().WithNamespace("test")
-	ioStreams, _, _, _ := genericclioptions.NewTestIOStreams()
+	ioStreams, _, _, _ := genericiooptions.NewTestIOStreams()
 	cmpFilter := cmp.FilterPath(func(p cmp.Path) bool {
 		switch p.String() {
 		// IOStreams contains unexported fields
-		case "IOStreams":
+		case "IOStreams", "Applier":
 			return true
 		}
 		return false
@@ -1255,6 +2491,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Namespace:      "test",
 				PullPolicy:     corev1.PullPolicy("Always"),
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 			},
 		},
@@ -1266,6 +2503,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "busybox",
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod1", "mypod2"},
 			},
 		},
@@ -1277,6 +2515,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "busybox",
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod1", "mypod2"},
 			},
 		},
@@ -1290,6 +2529,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Interactive:    true,
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 				TTY:            true,
 			},
@@ -1303,6 +2543,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "busybox",
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 			},
 		},
@@ -1316,6 +2557,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Interactive:    true,
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 				TTY:            true,
 			},
@@ -1329,6 +2571,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "myproj/debug-tools",
 				Namespace:      "test",
 				PullPolicy:     corev1.PullPolicy("Always"),
+				Profile:        ProfileLegacy,
 				ShareProcesses: true,
 				TargetNames:    []string{"mypod"},
 			},
@@ -1369,6 +2612,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Interactive:    true,
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 				TTY:            true,
 			},
@@ -1383,6 +2627,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "busybox",
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 			},
 		},
@@ -1396,6 +2641,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "busybox",
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 			},
 		},
@@ -1409,6 +2655,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Image:          "busybox",
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 			},
 		},
@@ -1424,6 +2671,7 @@ func TestCompleteAndValidate(t *testing.T) {
 					"app": "app-debugger",
 				},
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 			},
 		},
@@ -1442,6 +2690,7 @@ func TestCompleteAndValidate(t *testing.T) {
 					"sidecar": "sidecar:debug",
 				},
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 				TTY:            true,
 			},
@@ -1457,6 +2706,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Interactive:    true,
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"mypod"},
 				TTY:            true,
 			},
@@ -1496,6 +2746,7 @@ func TestCompleteAndValidate(t *testing.T) {
 				Interactive:    true,
 				Namespace:      "test",
 				ShareProcesses: true,
+				Profile:        ProfileLegacy,
 				TargetNames:    []string{"node/mynode"},
 				TTY:            true,
 			},
@@ -1531,18 +2782,17 @@ func TestCompleteAndValidate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			opts := NewDebugOptions(ioStreams)
 			var gotError error
-
 			cmd := &cobra.Command{
 				Run: func(cmd *cobra.Command, args []string) {
 					gotError = opts.Complete(tf, cmd, args)
 					if gotError != nil {
 						return
 					}
-					gotError = opts.Validate(cmd)
+					gotError = opts.Validate()
 				},
 			}
 			cmd.SetArgs(strings.Split(tc.args, " "))
-			addDebugFlags(cmd, opts)
+			opts.AddFlags(cmd)
 
 			cmdError := cmd.Execute()
 
@@ -1557,7 +2807,8 @@ func TestCompleteAndValidate(t *testing.T) {
 				t.Fatalf("CompleteAndValidate got error: '%v', wantError: %v", gotError, tc.wantError)
 			}
 
-			if diff := cmp.Diff(tc.wantOpts, opts, cmpFilter, cmpopts.IgnoreUnexported(DebugOptions{})); diff != "" {
+			if diff := cmp.Diff(tc.wantOpts, opts, cmpFilter, cmpopts.IgnoreFields(DebugOptions{},
+				"attachChanged", "shareProcessedChanged", "podClient", "WarningPrinter", "Applier", "explicitNamespace", "Builder", "AttachFunc")); diff != "" {
 				t.Error("CompleteAndValidate unexpected diff in generated object: (-want +got):\n", diff)
 			}
 		})

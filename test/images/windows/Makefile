@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-REGISTRY ?= k8s.gcr.io/e2e-test-images
+REGISTRY ?= registry.k8s.io/e2e-test-images
 REMOTE_DOCKER_URL ?=
 DOCKER_CERT_PATH ?= "$(HOME)/.docker"
 export
@@ -34,7 +34,7 @@ sub-push-%:
 
 sub-repush-as-linux-%:
 	img_version=$(shell cat $*/VERSION); \
-	docker buildx build --progress=plain --no-cache --pull --output=type=registry --platform "linux/amd64" \
+	docker buildx build --provenance=false --sbom=false --progress=plain --no-cache --pull --output=type=registry --platform "linux/amd64" \
 		--build-arg SOURCE="$(REGISTRY)/$*:$${img_version}" -t "$(REGISTRY)/$*:$${img_version}"-linux-cache $*/
 
 all-build: $(foreach image, ${ALL_IMAGES}, sub-build-${image})

@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/api/apitesting/fuzzer"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -29,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/apimachinery/pkg/util/diff"
 )
 
 func TestNilUnstructuredContent(t *testing.T) {
@@ -65,7 +65,7 @@ func TestUnstructuredMetadataRoundTrip(t *testing.T) {
 		setObjectMetaUsingAccessors(u, uCopy)
 
 		if !equality.Semantic.DeepEqual(u, uCopy) {
-			t.Errorf("diff: %v", diff.ObjectReflectDiff(u, uCopy))
+			t.Errorf("diff: %v", cmp.Diff(u, uCopy))
 		}
 	}
 }
@@ -105,7 +105,6 @@ func TestUnstructuredMetadataOmitempty(t *testing.T) {
 	u.SetAnnotations(nil)
 	u.SetOwnerReferences(nil)
 	u.SetFinalizers(nil)
-	u.SetClusterName("")
 	u.SetManagedFields(nil)
 
 	gotMetadata, _, err := unstructured.NestedFieldNoCopy(u.UnstructuredContent(), "metadata")
@@ -147,6 +146,5 @@ func setObjectMetaUsingAccessors(u, uCopy *unstructured.Unstructured) {
 	uCopy.SetAnnotations(u.GetAnnotations())
 	uCopy.SetOwnerReferences(u.GetOwnerReferences())
 	uCopy.SetFinalizers(u.GetFinalizers())
-	uCopy.SetClusterName(u.GetClusterName())
 	uCopy.SetManagedFields(u.GetManagedFields())
 }

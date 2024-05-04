@@ -17,7 +17,6 @@ limitations under the License.
 package runtime
 
 import (
-	"io/ioutil"
 	"net"
 	"os"
 	"reflect"
@@ -33,39 +32,32 @@ import (
 )
 
 func TestNewContainerRuntime(t *testing.T) {
-	execLookPathOK := fakeexec.FakeExec{
+	execLookPathOK := &fakeexec.FakeExec{
 		LookPathFunc: func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
 	}
-	execLookPathErr := fakeexec.FakeExec{
+	execLookPathErr := &fakeexec.FakeExec{
 		LookPathFunc: func(cmd string) (string, error) { return "", errors.Errorf("%s not found", cmd) },
 	}
 	cases := []struct {
-		name      string
-		execer    fakeexec.FakeExec
-		criSocket string
-		isDocker  bool
-		isError   bool
+		name    string
+		execer  *fakeexec.FakeExec
+		isError bool
 	}{
-		{"valid: default cri socket", execLookPathOK, constants.DefaultDockerCRISocket, true, false},
-		{"valid: cri-o socket url", execLookPathOK, "unix:///var/run/crio/crio.sock", false, false},
-		{"invalid: no crictl", execLookPathErr, "unix:///var/run/crio/crio.sock", false, true},
+		{"valid: crictl present", execLookPathOK, false},
+		{"invalid: no crictl", execLookPathErr, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime, err := NewContainerRuntime(&tc.execer, tc.criSocket)
+			_, err := NewContainerRuntime(tc.execer, "unix:///some/socket.sock")
 			if err != nil {
 				if !tc.isError {
-					t.Fatalf("unexpected NewContainerRuntime error. criSocket: %s, error: %v", tc.criSocket, err)
+					t.Fatalf("unexpected NewContainerRuntime error. error: %v", err)
 				}
 				return // expected error occurs, impossible to test runtime further
 			}
 			if tc.isError && err == nil {
-				t.Fatalf("unexpected NewContainerRuntime success. criSocket: %s", tc.criSocket)
-			}
-			isDocker := runtime.IsDocker()
-			if tc.isDocker != isDocker {
-				t.Fatalf("unexpected isDocker() result %v for the criSocket %s", isDocker, tc.criSocket)
+				t.Fatal("unexpected NewContainerRuntime success")
 			}
 		})
 	}
@@ -91,31 +83,24 @@ func TestIsRunning(t *testing.T) {
 		},
 	}
 
-	criExecer := fakeexec.FakeExec{
+	criExecer := &fakeexec.FakeExec{
 		CommandScript: genFakeActions(&fcmd, len(fcmd.CombinedOutputScript)),
 		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
-	}
-
-	dockerExecer := fakeexec.FakeExec{
-		CommandScript: genFakeActions(&fcmd, len(fcmd.CombinedOutputScript)),
-		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/docker", nil },
 	}
 
 	cases := []struct {
 		name      string
 		criSocket string
-		execer    fakeexec.FakeExec
+		execer    *fakeexec.FakeExec
 		isError   bool
 	}{
 		{"valid: CRI-O is running", "unix:///var/run/crio/crio.sock", criExecer, false},
 		{"invalid: CRI-O is not running", "unix:///var/run/crio/crio.sock", criExecer, true},
-		{"valid: docker is running", constants.DefaultDockerCRISocket, dockerExecer, false},
-		{"invalid: docker is not running", constants.DefaultDockerCRISocket, dockerExecer, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime, err := NewContainerRuntime(&tc.execer, tc.criSocket)
+			runtime, err := NewContainerRuntime(tc.execer, tc.criSocket)
 			if err != nil {
 				t.Fatalf("unexpected NewContainerRuntime error: %v", err)
 			}
@@ -138,7 +123,7 @@ func TestListKubeContainers(t *testing.T) {
 			func() ([]byte, []byte, error) { return []byte("k8s_p1\nk8s_p2"), nil, nil },
 		},
 	}
-	execer := fakeexec.FakeExec{
+	execer := &fakeexec.FakeExec{
 		CommandScript: genFakeActions(&fcmd, len(fcmd.CombinedOutputScript)),
 		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
 	}
@@ -150,12 +135,11 @@ func TestListKubeContainers(t *testing.T) {
 	}{
 		{"valid: list containers using CRI socket url", "unix:///var/run/crio/crio.sock", false},
 		{"invalid: list containers using CRI socket url", "unix:///var/run/crio/crio.sock", true},
-		{"valid: list containers using docker", constants.DefaultDockerCRISocket, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime, err := NewContainerRuntime(&execer, tc.criSocket)
+			runtime, err := NewContainerRuntime(execer, tc.criSocket)
 			if err != nil {
 				t.Fatalf("unexpected NewContainerRuntime error: %v", err)
 			}
@@ -177,20 +161,67 @@ func TestListKubeContainers(t *testing.T) {
 	}
 }
 
+func TestSandboxImage(t *testing.T) {
+	fcmd := fakeexec.FakeCmd{
+		CombinedOutputScript: []fakeexec.FakeAction{
+			func() ([]byte, []byte, error) { return []byte("registry.k8s.io/pause:3.9"), nil, nil },
+			func() ([]byte, []byte, error) { return []byte("registry.k8s.io/pause:3.9\n"), nil, nil },
+			func() ([]byte, []byte, error) { return nil, nil, nil },
+			func() ([]byte, []byte, error) { return nil, nil, &fakeexec.FakeExitError{Status: 1} },
+		},
+	}
+
+	execer := &fakeexec.FakeExec{
+		CommandScript: genFakeActions(&fcmd, len(fcmd.CombinedOutputScript)),
+		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
+	}
+
+	cases := []struct {
+		name     string
+		expected string
+		isError  bool
+	}{
+		{"valid: read sandbox image normally", "registry.k8s.io/pause:3.9", false},
+		{"valid: read sandbox image with leading/trailing white spaces", "registry.k8s.io/pause:3.9", false},
+		{"invalid: read empty sandbox image", "", true},
+		{"invalid: failed to read sandbox image", "", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, err := NewContainerRuntime(execer, "unix:///some/socket.sock")
+			if err != nil {
+				t.Fatalf("unexpected NewContainerRuntime error: %v", err)
+			}
+
+			sandboxImage, err := runtime.SandboxImage()
+			if tc.isError {
+				if err == nil {
+					t.Errorf("unexpected SandboxImage success")
+				}
+				return
+			} else if err != nil {
+				t.Errorf("unexpected SandboxImage error: %v", err)
+			}
+
+			if sandboxImage != tc.expected {
+				t.Errorf("expected sandbox image %v, but got %v", tc.expected, sandboxImage)
+			}
+		})
+	}
+}
+
 func TestRemoveContainers(t *testing.T) {
 	fakeOK := func() ([]byte, []byte, error) { return nil, nil, nil }
 	fakeErr := func() ([]byte, []byte, error) { return []byte("error"), nil, &fakeexec.FakeExitError{Status: 1} }
 	fcmd := fakeexec.FakeCmd{
 		CombinedOutputScript: []fakeexec.FakeAction{
 			fakeOK, fakeOK, fakeOK, fakeOK, fakeOK, fakeOK, // Test case 1
-			fakeOK, fakeOK, fakeOK, fakeErr, fakeOK, fakeOK,
-			fakeErr, fakeOK, fakeOK, fakeErr, fakeOK,
-			fakeOK, fakeOK, fakeOK, fakeOK, fakeOK, fakeOK,
-			fakeOK, fakeOK, fakeOK, fakeErr, fakeOK, fakeOK,
-			fakeErr, fakeOK, fakeOK, fakeErr, fakeOK,
+			fakeOK, fakeOK, fakeOK, fakeErr, fakeOK, fakeErr, fakeOK, fakeErr, fakeOK, fakeErr, fakeOK, fakeErr, fakeOK, fakeOK, // Test case 2
+			fakeErr, fakeErr, fakeErr, fakeErr, fakeErr, fakeOK, fakeOK, fakeOK, fakeOK, // Test case 3
 		},
 	}
-	execer := fakeexec.FakeExec{
+	execer := &fakeexec.FakeExec{
 		CommandScript: genFakeActions(&fcmd, len(fcmd.CombinedOutputScript)),
 		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
 	}
@@ -202,16 +233,13 @@ func TestRemoveContainers(t *testing.T) {
 		isError    bool
 	}{
 		{"valid: remove containers using CRI", "unix:///var/run/crio/crio.sock", []string{"k8s_p1", "k8s_p2", "k8s_p3"}, false}, // Test case 1
-		{"invalid: CRI rmp failure", "unix:///var/run/crio/crio.sock", []string{"k8s_p1", "k8s_p2", "k8s_p3"}, true},
-		{"invalid: CRI stopp failure", "unix:///var/run/crio/crio.sock", []string{"k8s_p1", "k8s_p2", "k8s_p3"}, true},
-		{"valid: remove containers using docker", constants.DefaultDockerCRISocket, []string{"k8s_c1", "k8s_c2", "k8s_c3"}, false},
-		{"invalid: docker rm failure", constants.DefaultDockerCRISocket, []string{"k8s_c1", "k8s_c2", "k8s_c3"}, true},
-		{"invalid: docker stop failure", constants.DefaultDockerCRISocket, []string{"k8s_c1", "k8s_c2", "k8s_c3"}, true},
+		{"invalid: CRI rmp failure", "unix:///var/run/crio/crio.sock", []string{"k8s_p1", "k8s_p2", "k8s_p3"}, true},            // Test case 2
+		{"invalid: CRI stopp failure", "unix:///var/run/crio/crio.sock", []string{"k8s_p1", "k8s_p2", "k8s_p3"}, true},          // Test case 3
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime, err := NewContainerRuntime(&execer, tc.criSocket)
+			runtime, err := NewContainerRuntime(execer, tc.criSocket)
 			if err != nil {
 				t.Fatalf("unexpected NewContainerRuntime error: %v, criSocket: %s", err, tc.criSocket)
 			}
@@ -246,7 +274,7 @@ func TestPullImage(t *testing.T) {
 			func() ([]byte, []byte, error) { return []byte("error"), nil, &fakeexec.FakeExitError{Status: 1} },
 		},
 	}
-	execer := fakeexec.FakeExec{
+	execer := &fakeexec.FakeExec{
 		CommandScript: genFakeActions(&fcmd, len(fcmd.CombinedOutputScript)),
 		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
 	}
@@ -259,13 +287,11 @@ func TestPullImage(t *testing.T) {
 	}{
 		{"valid: pull image using CRI", "unix:///var/run/crio/crio.sock", "image1", false},
 		{"invalid: CRI pull error", "unix:///var/run/crio/crio.sock", "image2", true},
-		{"valid: pull image using docker", constants.DefaultDockerCRISocket, "image1", false},
-		{"invalid: docker pull error", constants.DefaultDockerCRISocket, "image2", true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime, err := NewContainerRuntime(&execer, tc.criSocket)
+			runtime, err := NewContainerRuntime(execer, tc.criSocket)
 			if err != nil {
 				t.Fatalf("unexpected NewContainerRuntime error: %v, criSocket: %s", err, tc.criSocket)
 			}
@@ -290,7 +316,7 @@ func TestImageExists(t *testing.T) {
 			func() ([]byte, []byte, error) { return nil, nil, &fakeexec.FakeExitError{Status: 1} },
 		},
 	}
-	execer := fakeexec.FakeExec{
+	execer := &fakeexec.FakeExec{
 		CommandScript: genFakeActions(&fcmd, len(fcmd.RunScript)),
 		LookPathFunc:  func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
 	}
@@ -302,14 +328,12 @@ func TestImageExists(t *testing.T) {
 		result    bool
 	}{
 		{"valid: test if image exists using CRI", "unix:///var/run/crio/crio.sock", "image1", false},
-		{"invalid: CRI inspecti failure", "unix:///var/run/crio/crio.sock", "image2", true},
-		{"valid: test if image exists using docker", constants.DefaultDockerCRISocket, "image1", false},
-		{"invalid: docker inspect failure", constants.DefaultDockerCRISocket, "image2", true},
+		{"invalid: CRI inspect failure", "unix:///var/run/crio/crio.sock", "image2", true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			runtime, err := NewContainerRuntime(&execer, tc.criSocket)
+			runtime, err := NewContainerRuntime(execer, tc.criSocket)
 			if err != nil {
 				t.Fatalf("unexpected NewContainerRuntime error: %v, criSocket: %s", err, tc.criSocket)
 			}
@@ -336,7 +360,7 @@ func TestIsExistingSocket(t *testing.T) {
 		{
 			name: "Valid domain socket is detected as such",
 			proc: func(t *testing.T) {
-				tmpFile, err := ioutil.TempFile("", tempPrefix)
+				tmpFile, err := os.CreateTemp("", tempPrefix)
 				if err != nil {
 					t.Fatalf("unexpected error by TempFile: %v", err)
 				}
@@ -358,7 +382,7 @@ func TestIsExistingSocket(t *testing.T) {
 		{
 			name: "Regular file is not a domain socket",
 			proc: func(t *testing.T) {
-				tmpFile, err := ioutil.TempFile("", tempPrefix)
+				tmpFile, err := os.CreateTemp("", tempPrefix)
 				if err != nil {
 					t.Fatalf("unexpected error by TempFile: %v", err)
 				}
@@ -395,45 +419,22 @@ func TestDetectCRISocketImpl(t *testing.T) {
 		expectedSocket  string
 	}{
 		{
-			name:            "No existing sockets, use Docker",
+			name:            "No existing sockets, use default",
 			existingSockets: []string{},
 			expectedError:   false,
-			expectedSocket:  constants.DefaultDockerCRISocket,
+			expectedSocket:  constants.DefaultCRISocket,
 		},
 		{
 			name:            "One valid CRI socket leads to success",
-			existingSockets: []string{"unix:///var/run/crio/crio.sock"},
+			existingSockets: []string{"unix:///foo/bar.sock"},
 			expectedError:   false,
-			expectedSocket:  "unix:///var/run/crio/crio.sock",
+			expectedSocket:  "unix:///foo/bar.sock",
 		},
 		{
-			name:            "Correct Docker CRI socket is returned",
-			existingSockets: []string{"unix:///var/run/docker.sock"},
-			expectedError:   false,
-			expectedSocket:  constants.DefaultDockerCRISocket,
-		},
-		{
-			name: "CRI and Docker sockets lead to an error",
+			name: "Multiple CRI sockets lead to an error",
 			existingSockets: []string{
-				"unix:///var/run/docker.sock",
-				"unix:///var/run/crio/crio.sock",
-			},
-			expectedError: true,
-		},
-		{
-			name: "Docker and containerd lead to Docker being used",
-			existingSockets: []string{
-				"unix:///var/run/docker.sock",
-				"unix:///run/containerd/containerd.sock",
-			},
-			expectedError:  false,
-			expectedSocket: constants.DefaultDockerCRISocket,
-		},
-		{
-			name: "A couple of CRI sockets lead to an error",
-			existingSockets: []string{
-				"unix:///var/run/crio/crio.sock",
-				"unix:///run/containerd/containerd.sock",
+				"unix:///foo/bar.sock",
+				"unix:///foo/baz.sock",
 			},
 			expectedError: true,
 		},
@@ -447,15 +448,90 @@ func TestDetectCRISocketImpl(t *testing.T) {
 						return true
 					}
 				}
-
 				return false
-			})
+			}, test.existingSockets)
+
 			if (err != nil) != test.expectedError {
 				t.Fatalf("detectCRISocketImpl returned unexpected result\n\tExpected error: %t\n\tGot error: %t", test.expectedError, err != nil)
 			}
 			if !test.expectedError && socket != test.expectedSocket {
 				t.Fatalf("detectCRISocketImpl returned unexpected CRI socket\n\tExpected socket: %s\n\tReturned socket: %s",
 					test.expectedSocket, socket)
+			}
+		})
+	}
+}
+
+func TestPullImagesInParallelImpl(t *testing.T) {
+	testError := errors.New("error")
+
+	tests := []struct {
+		name            string
+		images          []string
+		ifNotPresent    bool
+		imageExistsFunc func(string) (bool, error)
+		pullImageFunc   func(string) error
+		expectedErrors  int
+	}{
+		{
+			name:         "all images exist, no errors",
+			images:       []string{"foo", "bar", "baz"},
+			ifNotPresent: true,
+			imageExistsFunc: func(string) (bool, error) {
+				return true, nil
+			},
+			pullImageFunc:  nil,
+			expectedErrors: 0,
+		},
+		{
+			name:         "cannot check if one image exists due to error",
+			images:       []string{"foo", "bar", "baz"},
+			ifNotPresent: true,
+			imageExistsFunc: func(image string) (bool, error) {
+				if image == "baz" {
+					return false, testError
+				}
+				return true, nil
+			},
+			pullImageFunc:  nil,
+			expectedErrors: 1,
+		},
+		{
+			name:         "cannot pull two images",
+			images:       []string{"foo", "bar", "baz"},
+			ifNotPresent: true,
+			imageExistsFunc: func(string) (bool, error) {
+				return false, nil
+			},
+			pullImageFunc: func(image string) error {
+				if image == "foo" {
+					return nil
+				}
+				return testError
+			},
+			expectedErrors: 2,
+		},
+		{
+			name:         "pull all images",
+			images:       []string{"foo", "bar", "baz"},
+			ifNotPresent: true,
+			imageExistsFunc: func(string) (bool, error) {
+				return false, nil
+			},
+			pullImageFunc: func(string) error {
+				return nil
+			},
+			expectedErrors: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := pullImagesInParallelImpl(tc.images, tc.ifNotPresent,
+				tc.imageExistsFunc, tc.pullImageFunc)
+			if len(actual) != tc.expectedErrors {
+				t.Fatalf("expected non-nil errors: %v, got: %v, full list of errors: %v",
+					tc.expectedErrors, len(actual), actual)
 			}
 		})
 	}

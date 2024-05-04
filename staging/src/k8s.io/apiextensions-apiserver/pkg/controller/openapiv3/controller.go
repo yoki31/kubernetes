@@ -22,11 +22,13 @@ import (
 	"sync"
 	"time"
 
+	apiextensionsfeatures "k8s.io/apiextensions-apiserver/pkg/features"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -178,6 +180,7 @@ func (c *Controller) deleteCRD(name string) {
 			if len(crdListForGV) == 0 {
 				delete(c.specsByGVandName, gv)
 			}
+			regenerationCounter.With(map[string]string{"group": gv.Group, "version": gv.Version, "crd": name, "reason": "remove"})
 			c.updateGroupVersion(gv)
 		}
 	}
@@ -210,7 +213,9 @@ func (c *Controller) updateCRDSpec(crd *apiextensionsv1.CustomResourceDefinition
 	}
 
 	_, ok := c.specsByGVandName[gv]
+	reason := "update"
 	if !ok {
+		reason = "add"
 		c.specsByGVandName[gv] = map[string]*spec3.OpenAPI{}
 	}
 
@@ -222,12 +227,15 @@ func (c *Controller) updateCRDSpec(crd *apiextensionsv1.CustomResourceDefinition
 		}
 	}
 	c.specsByGVandName[gv][name] = v3
-
+	regenerationCounter.With(map[string]string{"crd": name, "group": gv.Group, "version": gv.Version, "reason": reason})
 	return c.updateGroupVersion(gv)
 }
 
 func (c *Controller) buildV3Spec(crd *apiextensionsv1.CustomResourceDefinition, name, versionName string) error {
-	v3, err := builder.BuildOpenAPIV3(crd, versionName, builder.Options{V2: false})
+	v3, err := builder.BuildOpenAPIV3(crd, versionName, builder.Options{
+		V2:                      false,
+		IncludeSelectableFields: utilfeature.DefaultFeatureGate.Enabled(apiextensionsfeatures.CustomResourceFieldSelectors),
+	})
 
 	if err != nil {
 		return err

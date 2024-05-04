@@ -3,21 +3,17 @@
 approvers:
   - mikedanese
   - dims
-  - wlan0
   - andrewsykim
   - cheftako
 reviewers:
   - thockin
-  - lavalamp
   - smarterclayton
   - wojtek-t
   - deads2k
-  - brendandburns
   - derekwaynecarr
   - caesarxuchao
   - mikedanese
   - liggitt
-  - pmorie
   - sttts
   - dchen1107
   - saad-ali

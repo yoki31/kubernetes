@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"reflect"
 	"strings"
@@ -39,7 +38,7 @@ import (
 )
 
 func objBody(obj runtime.Object) io.ReadCloser {
-	return ioutil.NopCloser(bytes.NewReader([]byte(runtime.EncodeOrDie(corev1Codec, obj))))
+	return io.NopCloser(bytes.NewReader([]byte(runtime.EncodeOrDie(corev1Codec, obj))))
 }
 
 func header() http.Header {
@@ -65,6 +64,17 @@ func V1DeepEqualSafePodSpec() corev1.PodSpec {
 		DNSPolicy:                     corev1.DNSClusterFirst,
 		TerminationGracePeriodSeconds: &grace,
 		SecurityContext:               &corev1.PodSecurityContext{},
+	}
+}
+
+func V1DeepEqualSafePodStatus() corev1.PodStatus {
+	return corev1.PodStatus{
+		Conditions: []corev1.PodCondition{
+			{
+				Status: corev1.ConditionTrue,
+				Type:   corev1.PodReady,
+			},
+		},
 	}
 }
 
@@ -239,7 +249,7 @@ func TestHelperCreate(t *testing.T) {
 			if tt.Req != nil && !tt.Req(client.Req) {
 				t.Errorf("%d: unexpected request: %#v", i, client.Req)
 			}
-			body, err := ioutil.ReadAll(client.Req.Body)
+			body, err := io.ReadAll(client.Req.Body)
 			if err != nil {
 				t.Fatalf("%d: unexpected error: %#v", i, err)
 			}
@@ -257,11 +267,12 @@ func TestHelperCreate(t *testing.T) {
 
 func TestHelperGet(t *testing.T) {
 	tests := []struct {
-		name    string
-		Err     bool
-		Req     func(*http.Request) bool
-		Resp    *http.Response
-		HttpErr error
+		name        string
+		subresource string
+		Err         bool
+		Req         func(*http.Request) bool
+		Resp        *http.Response
+		HttpErr     error
 	}{
 		{
 			name:    "test1",
@@ -301,6 +312,35 @@ func TestHelperGet(t *testing.T) {
 				return true
 			},
 		},
+		{
+			name:        "test with subresource",
+			subresource: "status",
+			Resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header(),
+				Body:       objBody(&corev1.Pod{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}, ObjectMeta: metav1.ObjectMeta{Name: "foo"}}),
+			},
+			Req: func(req *http.Request) bool {
+				if req.Method != "GET" {
+					t.Errorf("unexpected method: %#v", req)
+					return false
+				}
+				parts := splitPath(req.URL.Path)
+				if parts[1] != "bar" {
+					t.Errorf("url doesn't contain namespace: %#v", req)
+					return false
+				}
+				if parts[2] != "foo" {
+					t.Errorf("url doesn't contain name: %#v", req)
+					return false
+				}
+				if parts[3] != "status" {
+					t.Errorf("url doesn't contain subresource: %#v", req)
+					return false
+				}
+				return true
+			},
+		},
 	}
 	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -313,6 +353,7 @@ func TestHelperGet(t *testing.T) {
 			modifier := &Helper{
 				RESTClient:      client,
 				NamespaceScoped: true,
+				Subresource:     tt.subresource,
 			}
 			obj, err := modifier.Get("bar", "foo")
 
@@ -356,6 +397,34 @@ func TestHelperList(t *testing.T) {
 		},
 		{
 			name: "test3",
+			Resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header(),
+				Body: objBody(&corev1.PodList{
+					Items: []corev1.Pod{{
+						ObjectMeta: metav1.ObjectMeta{Name: "foo"},
+					},
+					},
+				}),
+			},
+			Req: func(req *http.Request) bool {
+				if req.Method != "GET" {
+					t.Errorf("unexpected method: %#v", req)
+					return false
+				}
+				if req.URL.Path != "/namespaces/bar" {
+					t.Errorf("url doesn't contain name: %#v", req.URL)
+					return false
+				}
+				if req.URL.Query().Get(metav1.LabelSelectorQueryParam(corev1GV.String())) != labels.SelectorFromSet(labels.Set{"foo": "baz"}).String() {
+					t.Errorf("url doesn't contain query parameters: %#v", req.URL)
+					return false
+				}
+				return true
+			},
+		},
+		{
+			name: "test with",
 			Resp: &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     header(),
@@ -501,6 +570,7 @@ func TestHelperReplace(t *testing.T) {
 		Object          runtime.Object
 		Namespace       string
 		NamespaceScoped bool
+		Subresource     string
 
 		ExpectPath   string
 		ExpectObject runtime.Object
@@ -592,6 +662,29 @@ func TestHelperReplace(t *testing.T) {
 			Resp:            &http.Response{StatusCode: http.StatusOK, Header: header(), Body: objBody(&metav1.Status{Status: metav1.StatusSuccess})},
 			Req:             expectPut,
 		},
+		{
+			Name:            "test7 - with status subresource",
+			Namespace:       "bar",
+			NamespaceScoped: true,
+			Subresource:     "status",
+			Object: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "foo"},
+				Status:     V1DeepEqualSafePodStatus(),
+			},
+			ExpectPath: "/namespaces/bar/foo/status",
+			ExpectObject: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "foo", ResourceVersion: "10"},
+				Status:     V1DeepEqualSafePodStatus(),
+			},
+			Overwrite: true,
+			HTTPClient: fake.CreateHTTPClient(func(req *http.Request) (*http.Response, error) {
+				if req.Method == "PUT" {
+					return &http.Response{StatusCode: http.StatusOK, Header: header(), Body: objBody(&metav1.Status{Status: metav1.StatusSuccess})}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: header(), Body: objBody(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "foo", ResourceVersion: "10"}})}, nil
+			}),
+			Req: expectPut,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
@@ -605,6 +698,7 @@ func TestHelperReplace(t *testing.T) {
 			modifier := &Helper{
 				RESTClient:      client,
 				NamespaceScoped: tt.NamespaceScoped,
+				Subresource:     tt.Subresource,
 			}
 			_, err := modifier.Replace(tt.Namespace, "foo", tt.Overwrite, tt.Object)
 			if (err != nil) != tt.Err {
@@ -616,7 +710,7 @@ func TestHelperReplace(t *testing.T) {
 			if tt.Req != nil && (client.Req == nil || !tt.Req(tt.ExpectPath, client.Req)) {
 				t.Fatalf("unexpected request: %#v", client.Req)
 			}
-			body, err := ioutil.ReadAll(client.Req.Body)
+			body, err := io.ReadAll(client.Req.Body)
 			if err != nil {
 				t.Fatalf("unexpected error: %#v", err)
 			}

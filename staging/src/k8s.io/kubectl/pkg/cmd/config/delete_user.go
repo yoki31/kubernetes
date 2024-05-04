@@ -21,10 +21,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -43,11 +44,11 @@ type DeleteUserOptions struct {
 	config       *clientcmdapi.Config
 	configFile   string
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 // NewDeleteUserOptions creates the options for the command
-func NewDeleteUserOptions(ioStreams genericclioptions.IOStreams, configAccess clientcmd.ConfigAccess) *DeleteUserOptions {
+func NewDeleteUserOptions(ioStreams genericiooptions.IOStreams, configAccess clientcmd.ConfigAccess) *DeleteUserOptions {
 	return &DeleteUserOptions{
 		configAccess: configAccess,
 		IOStreams:    ioStreams,
@@ -55,7 +56,7 @@ func NewDeleteUserOptions(ioStreams genericclioptions.IOStreams, configAccess cl
 }
 
 // NewCmdConfigDeleteUser returns a Command instance for 'config delete-user' sub command
-func NewCmdConfigDeleteUser(streams genericclioptions.IOStreams, configAccess clientcmd.ConfigAccess) *cobra.Command {
+func NewCmdConfigDeleteUser(streams genericiooptions.IOStreams, configAccess clientcmd.ConfigAccess) *cobra.Command {
 	o := NewDeleteUserOptions(streams, configAccess)
 
 	cmd := &cobra.Command{
@@ -64,6 +65,7 @@ func NewCmdConfigDeleteUser(streams genericclioptions.IOStreams, configAccess cl
 		Short:                 i18n.T("Delete the specified user from the kubeconfig"),
 		Long:                  i18n.T("Delete the specified user from the kubeconfig."),
 		Example:               deleteUserExample,
+		ValidArgsFunction:     completion.UserCompletionFunc,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(cmd, args))
 			cmdutil.CheckErr(o.Validate())

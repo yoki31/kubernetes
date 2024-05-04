@@ -2,17 +2,14 @@
 
 reviewers:
   - thockin
-  - lavalamp
   - smarterclayton
   - wojtek-t
   - deads2k
   - yujuhong
-  - brendandburns
   - derekwaynecarr
   - caesarxuchao
   - mikedanese
   - liggitt
-  - pmorie
   - sttts
   - dchen1107
   - janetkuo
@@ -22,4 +19,3 @@ reviewers:
   - soltysh
   - jsafrane
   - dims
-  - fejta

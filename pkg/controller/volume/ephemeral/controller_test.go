@@ -22,24 +22,20 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
-	// storagev1 "k8s.io/api/storage/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	// "k8s.io/apimachinery/pkg/types"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	kcache "k8s.io/client-go/tools/cache"
 	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller"
 	ephemeralvolumemetrics "k8s.io/kubernetes/pkg/controller/volume/ephemeral/metrics"
-
-	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -149,7 +145,7 @@ func TestSyncHandler(t *testing.T) {
 			podInformer := informerFactory.Core().V1().Pods()
 			pvcInformer := informerFactory.Core().V1().PersistentVolumeClaims()
 
-			c, err := NewController(fakeKubeClient, podInformer, pvcInformer)
+			c, err := NewController(ctx, fakeKubeClient, podInformer, pvcInformer)
 			if err != nil {
 				t.Fatalf("error creating ephemeral controller : %v", err)
 			}
@@ -213,7 +209,7 @@ func makePod(name, namespace string, uid types.UID, volumes ...v1.Volume) *v1.Po
 }
 
 func podKey(pod *v1.Pod) string {
-	key, _ := kcache.DeletionHandlingMetaNamespaceKeyFunc(testPodWithEphemeral)
+	key, _ := cache.DeletionHandlingMetaNamespaceKeyFunc(testPodWithEphemeral)
 	return key
 }
 

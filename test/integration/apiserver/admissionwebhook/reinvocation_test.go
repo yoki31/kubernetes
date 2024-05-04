@@ -22,7 +22,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,7 +36,6 @@ import (
 	"k8s.io/api/admission/v1beta1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,6 +44,7 @@ import (
 	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	utiltesting "k8s.io/client-go/util/testing"
 	kubeapiservertesting "k8s.io/kubernetes/cmd/kube-apiserver/app/testing"
 	"k8s.io/kubernetes/test/integration/framework"
 	"k8s.io/kubernetes/test/utils"
@@ -265,7 +265,7 @@ func testWebhookReinvocationPolicy(t *testing.T, watchCache bool) {
 	defer webhookServer.Close()
 
 	// prepare audit policy file
-	policyFile, err := ioutil.TempFile("", "audit-policy.yaml")
+	policyFile, err := os.CreateTemp("", "audit-policy.yaml")
 	if err != nil {
 		t.Fatalf("Failed to create audit policy file: %v", err)
 	}
@@ -278,11 +278,11 @@ func testWebhookReinvocationPolicy(t *testing.T, watchCache bool) {
 	}
 
 	// prepare audit log file
-	logFile, err := ioutil.TempFile("", "audit.log")
+	logFile, err := os.CreateTemp("", "audit.log")
 	if err != nil {
 		t.Fatalf("Failed to create audit log file: %v", err)
 	}
-	defer os.Remove(logFile.Name())
+	defer utiltesting.CloseAndRemove(t, logFile)
 
 	s := kubeapiservertesting.StartTestServerOrDie(t, kubeapiservertesting.NewDefaultTestServerOptions(), []string{
 		"--disable-admission-plugins=ServiceAccount",
@@ -319,7 +319,7 @@ func testWebhookReinvocationPolicy(t *testing.T, watchCache bool) {
 			testCaseID := strconv.Itoa(i)
 			ns := "reinvoke-" + testCaseID
 			nsLabels := map[string]string{"test-case": testCaseID}
-			_, err = client.CoreV1().Namespaces().Create(context.TODO(), &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: nsLabels}}, metav1.CreateOptions{})
+			_, err = client.CoreV1().Namespaces().Create(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: nsLabels}}, metav1.CreateOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -327,7 +327,7 @@ func testWebhookReinvocationPolicy(t *testing.T, watchCache bool) {
 			// Write markers to a separate namespace to avoid cross-talk
 			markerNs := ns + "-markers"
 			markerNsLabels := map[string]string{"test-markers": testCaseID}
-			_, err = client.CoreV1().Namespaces().Create(context.TODO(), &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: markerNs, Labels: markerNsLabels}}, metav1.CreateOptions{})
+			_, err = client.CoreV1().Namespaces().Create(context.TODO(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: markerNs, Labels: markerNsLabels}}, metav1.CreateOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -414,7 +414,7 @@ func testWebhookReinvocationPolicy(t *testing.T, watchCache bool) {
 					Labels:    map[string]string{"x": "true"},
 				},
 				Spec: corev1.PodSpec{
-					Containers: []v1.Container{{
+					Containers: []corev1.Container{{
 						Name:  "fake-name",
 						Image: "fakeimage",
 					}},
@@ -536,7 +536,7 @@ func newReinvokeWebhookHandler(recorder *invocationRecorder) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		data, err := ioutil.ReadAll(r.Body)
+		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), 400)
 		}
@@ -637,7 +637,7 @@ func newReinvocationMarkerFixture(namespace string) *corev1.Pod {
 			},
 		},
 		Spec: corev1.PodSpec{
-			Containers: []v1.Container{{
+			Containers: []corev1.Container{{
 				Name:  "fake-name",
 				Image: "fakeimage",
 			}},

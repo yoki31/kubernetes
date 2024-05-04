@@ -17,13 +17,17 @@ limitations under the License.
 package node
 
 import (
+	"context"
 	"fmt"
 
-	"github.com/onsi/ginkgo"
-	"k8s.io/api/core/v1"
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	imageutils "k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 )
 
 // PrivilegedPodTestConfig is configuration struct for privileged pod test
@@ -38,18 +42,20 @@ type PrivilegedPodTestConfig struct {
 	pod *v1.Pod
 }
 
-var _ = SIGDescribe("PrivilegedPod [NodeConformance]", func() {
+var _ = SIGDescribe("PrivilegedPod", framework.WithNodeConformance(), func() {
+	f := framework.NewDefaultFramework("e2e-privileged-pod")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 	config := &PrivilegedPodTestConfig{
-		f:                      framework.NewDefaultFramework("e2e-privileged-pod"),
+		f:                      f,
 		privilegedPod:          "privileged-pod",
 		privilegedContainer:    "privileged-container",
 		notPrivilegedContainer: "not-privileged-container",
 	}
 
-	ginkgo.It("should enable privileged commands [LinuxOnly]", func() {
+	ginkgo.It("should enable privileged commands [LinuxOnly]", func(ctx context.Context) {
 		// Windows does not support privileged containers.
 		ginkgo.By("Creating a pod with a privileged container")
-		config.createPods()
+		config.createPods(ctx)
 
 		ginkgo.By("Executing in the privileged container")
 		config.run(config.privilegedContainer, true)
@@ -63,20 +69,20 @@ func (c *PrivilegedPodTestConfig) run(containerName string, expectSuccess bool) 
 	cmd := []string{"ip", "link", "add", "dummy1", "type", "dummy"}
 	reverseCmd := []string{"ip", "link", "del", "dummy1"}
 
-	stdout, stderr, err := c.f.ExecCommandInContainerWithFullOutput(
-		c.privilegedPod, containerName, cmd...)
+	stdout, stderr, err := e2epod.ExecCommandInContainerWithFullOutput(
+		c.f, c.privilegedPod, containerName, cmd...)
 	msg := fmt.Sprintf("cmd %v, stdout %q, stderr %q", cmd, stdout, stderr)
 
 	if expectSuccess {
 		framework.ExpectNoError(err, msg)
 		// We need to clean up the dummy link that was created, as it
 		// leaks out into the node level -- yuck.
-		_, _, err := c.f.ExecCommandInContainerWithFullOutput(
-			c.privilegedPod, containerName, reverseCmd...)
+		_, _, err := e2epod.ExecCommandInContainerWithFullOutput(
+			c.f, c.privilegedPod, containerName, reverseCmd...)
 		framework.ExpectNoError(err,
 			fmt.Sprintf("could not remove dummy1 link: %v", err))
 	} else {
-		framework.ExpectError(err, msg)
+		gomega.Expect(err).To(gomega.HaveOccurred(), msg)
 	}
 }
 
@@ -110,7 +116,7 @@ func (c *PrivilegedPodTestConfig) createPodsSpec() *v1.Pod {
 	}
 }
 
-func (c *PrivilegedPodTestConfig) createPods() {
+func (c *PrivilegedPodTestConfig) createPods(ctx context.Context) {
 	podSpec := c.createPodsSpec()
-	c.pod = c.f.PodClient().CreateSync(podSpec)
+	c.pod = e2epod.NewPodClient(c.f).CreateSync(ctx, podSpec)
 }

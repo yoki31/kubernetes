@@ -21,7 +21,6 @@ package systemd
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -134,7 +133,7 @@ func (bus *DBusCon) ReloadLogindConf() error {
 	return nil
 }
 
-// MonitorShutdown detects the a node shutdown by watching for "PrepareForShutdown" logind events.
+// MonitorShutdown detects the node shutdown by watching for "PrepareForShutdown" logind events.
 // see https://www.freedesktop.org/wiki/Software/systemd/inhibit/ for more details.
 func (bus *DBusCon) MonitorShutdown() (<-chan bool, error) {
 	err := bus.SystemBus.AddMatchSignal(dbus.WithMatchInterface(logindInterface), dbus.WithMatchMember("PrepareForShutdown"), dbus.WithMatchObjectPath("/org/freedesktop/login1"))
@@ -193,7 +192,7 @@ InhibitDelayMaxSec=%.0f
 `, inhibitDelayMax.Seconds())
 
 	logindOverridePath := filepath.Join(logindConfigDirectory, kubeletLogindConf)
-	if err := ioutil.WriteFile(logindOverridePath, []byte(inhibitOverride), 0644); err != nil {
+	if err := os.WriteFile(logindOverridePath, []byte(inhibitOverride), 0644); err != nil {
 		return fmt.Errorf("failed writing logind shutdown inhibit override file %v: %w", logindOverridePath, err)
 	}
 

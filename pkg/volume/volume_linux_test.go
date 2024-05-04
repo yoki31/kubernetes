@@ -43,10 +43,6 @@ func (l *localFakeMounter) GetAttributes() Attributes {
 	return l.attributes
 }
 
-func (l *localFakeMounter) CanMount() error {
-	return nil
-}
-
 func (l *localFakeMounter) SetUp(mounterArgs MounterArgs) error {
 	return nil
 }
@@ -170,7 +166,7 @@ func TestSkipPermissionChange(t *testing.T) {
 			}
 
 			mounter := &localFakeMounter{path: tmpDir}
-			ok = skipPermissionChange(mounter, &expectedGid, test.fsGroupChangePolicy)
+			ok = skipPermissionChange(mounter, tmpDir, &expectedGid, test.fsGroupChangePolicy)
 			if ok != test.skipPermssion {
 				t.Errorf("for %s expected skipPermission to be %v got %v", test.description, test.skipPermssion, ok)
 			}
@@ -306,8 +302,8 @@ func TestSetVolumeOwnershipMode(t *testing.T) {
 				t.Errorf("for %s error running setup with: %v", test.description, err)
 			}
 
-			mounter := &localFakeMounter{path: tmpDir}
-			err = SetVolumeOwnership(mounter, &expectedGid, test.fsGroupChangePolicy, nil)
+			mounter := &localFakeMounter{path: "FAKE_DIR_DOESNT_EXIST"} // SetVolumeOwnership() must rely on tmpDir
+			err = SetVolumeOwnership(mounter, tmpDir, &expectedGid, test.fsGroupChangePolicy, nil)
 			if err != nil {
 				t.Errorf("for %s error changing ownership with: %v", test.description, err)
 			}
@@ -346,7 +342,7 @@ func verifyDirectoryPermission(path string, readonly bool) bool {
 
 func TestSetVolumeOwnershipOwner(t *testing.T) {
 	fsGroup := int64(3000)
-	currentUid := os.Getuid()
+	currentUid := os.Geteuid()
 	if currentUid != 0 {
 		t.Skip("running as non-root")
 	}
@@ -443,7 +439,7 @@ func TestSetVolumeOwnershipOwner(t *testing.T) {
 
 			mounter := &localFakeMounter{path: tmpDir}
 			always := v1.FSGroupChangeAlways
-			err = SetVolumeOwnership(mounter, test.fsGroup, &always, nil)
+			err = SetVolumeOwnership(mounter, tmpDir, test.fsGroup, &always, nil)
 			if err != nil {
 				t.Errorf("for %s error changing ownership with: %v", test.description, err)
 			}

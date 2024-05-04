@@ -27,6 +27,7 @@ import (
 	_ "k8s.io/kubernetes/pkg/apis/apps/install"
 	_ "k8s.io/kubernetes/pkg/apis/batch/install"
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
+	"k8s.io/kubernetes/pkg/features"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -48,7 +49,6 @@ import (
 	"k8s.io/kubernetes/pkg/apis/apps"
 	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/apis/core"
-	"k8s.io/kubernetes/pkg/features"
 	podsecurityadmission "k8s.io/pod-security-admission/admission"
 	podsecurityconfigloader "k8s.io/pod-security-admission/admission/api/load"
 	podsecurityadmissionapi "k8s.io/pod-security-admission/api"
@@ -70,7 +70,6 @@ func Register(plugins *admission.Plugins) {
 type Plugin struct {
 	*admission.Handler
 
-	enabled               bool
 	inspectedFeatureGates bool
 
 	client          kubernetes.Interface
@@ -152,8 +151,8 @@ func (p *Plugin) updateDelegate() {
 }
 
 func (c *Plugin) InspectFeatureGates(featureGates featuregate.FeatureGate) {
-	c.enabled = featureGates.Enabled(features.PodSecurity)
 	c.inspectedFeatureGates = true
+	policy.RelaxPolicyForUserNamespacePods(featureGates.Enabled(features.UserNamespacesPodSecurityStandards))
 }
 
 // ValidateInitialization ensures all required options are set
@@ -178,9 +177,6 @@ var (
 )
 
 func (p *Plugin) Validate(ctx context.Context, a admission.Attributes, o admission.ObjectInterfaces) error {
-	if !p.enabled {
-		return nil
-	}
 	gr := a.GetResource().GroupResource()
 	if !applicableResources[gr] && !p.delegate.PodSpecExtractor.HasPodSpec(gr) {
 		return nil
@@ -190,8 +186,14 @@ func (p *Plugin) Validate(ctx context.Context, a admission.Attributes, o admissi
 	for _, w := range result.Warnings {
 		warning.AddWarning(ctx, "", w)
 	}
-	for k, v := range result.AuditAnnotations {
-		audit.AddAuditAnnotation(ctx, podsecurityadmissionapi.AuditAnnotationPrefix+k, v)
+	if len(result.AuditAnnotations) > 0 {
+		annotations := make([]string, len(result.AuditAnnotations)*2)
+		i := 0
+		for k, v := range result.AuditAnnotations {
+			annotations[i], annotations[i+1] = podsecurityadmissionapi.AuditAnnotationPrefix+k, v
+			i += 2
+		}
+		audit.AddAuditAnnotations(ctx, annotations...)
 	}
 	if !result.Allowed {
 		// start with a generic forbidden error

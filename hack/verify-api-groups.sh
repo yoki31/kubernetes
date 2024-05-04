@@ -65,11 +65,10 @@ done
 # them.  This happens for types that aren't served from the API server
 groups_without_codegen=(
 	"abac"
-	"componentconfig"
 	"imagepolicy"
 	"admission"
 )
-client_gen_file="${KUBE_ROOT}/vendor/k8s.io/code-generator/cmd/client-gen/main.go"
+client_gen_file="${KUBE_ROOT}/staging/src/k8s.io/code-generator/cmd/client-gen/main.go"
 
 for group_dirname in "${group_dirnames[@]}"; do
 	if ! grep -q "${group_dirname}/" "${client_gen_file}" ; then
@@ -92,7 +91,7 @@ done
 packages_without_install=(
 	"k8s.io/kubernetes/pkg/apis/abac"
 	"k8s.io/kubernetes/pkg/apis/admission"
-	"k8s.io/kubernetes/pkg/apis/componentconfig" # TODO: Remove this package completely and from this list
+	"k8s.io/kubernetes/pkg/apis/apidiscovery"
 )
 known_version_files=(
 	"pkg/controlplane/import_known_versions.go"

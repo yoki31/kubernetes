@@ -35,7 +35,7 @@ type InitData interface {
 	Cfg() *kubeadmapi.InitConfiguration
 	DryRun() bool
 	SkipTokenPrint() bool
-	IgnorePreflightErrors() sets.String
+	IgnorePreflightErrors() sets.Set[string]
 	CertificateWriteDir() string
 	CertificateDir() string
 	KubeConfigDir() string
@@ -45,6 +45,7 @@ type InitData interface {
 	ExternalCA() bool
 	OutputWriter() io.Writer
 	Client() (clientset.Interface, error)
+	ClientWithoutBootstrap() (clientset.Interface, error)
 	Tokens() []string
 	PatchesDir() string
 }

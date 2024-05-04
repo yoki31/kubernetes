@@ -23,12 +23,12 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/klog/v2/ktesting"
+	extenderv1 "k8s.io/kube-scheduler/extender/v1"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
@@ -37,29 +37,32 @@ import (
 	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
+	tf "k8s.io/kubernetes/pkg/scheduler/testing/framework"
 )
 
-func TestGenericSchedulerWithExtenders(t *testing.T) {
+func TestSchedulerWithExtenders(t *testing.T) {
 	tests := []struct {
 		name            string
-		registerPlugins []st.RegisterPluginFunc
-		extenders       []st.FakeExtender
+		registerPlugins []tf.RegisterPluginFunc
+		extenders       []tf.FakeExtender
 		nodes           []string
 		expectedResult  ScheduleResult
 		expectsErr      bool
 	}{
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates: []st.FitPredicate{st.TruePredicateExtender},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
 				},
 				{
-					Predicates: []st.FitPredicate{st.ErrorPredicateExtender},
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.ErrorPredicateExtender},
 				},
 			},
 			nodes:      []string{"node1", "node2"},
@@ -67,17 +70,19 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			name:       "test 1",
 		},
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates: []st.FitPredicate{st.TruePredicateExtender},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
 				},
 				{
-					Predicates: []st.FitPredicate{st.FalsePredicateExtender},
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.FalsePredicateExtender},
 				},
 			},
 			nodes:      []string{"node1", "node2"},
@@ -85,17 +90,20 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			name:       "test 2",
 		},
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterScorePlugin("EqualPrioritizerPlugin", tf.NewEqualPrioritizerPlugin(), 1),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates: []st.FitPredicate{st.TruePredicateExtender},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
 				},
 				{
-					Predicates: []st.FitPredicate{st.Node1PredicateExtender},
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.Node1PredicateExtender},
 				},
 			},
 			nodes: []string{"node1", "node2"},
@@ -107,17 +115,19 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			name: "test 3",
 		},
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates: []st.FitPredicate{st.Node2PredicateExtender},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.Node2PredicateExtender},
 				},
 				{
-					Predicates: []st.FitPredicate{st.Node1PredicateExtender},
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.Node1PredicateExtender},
 				},
 			},
 			nodes:      []string{"node1", "node2"},
@@ -125,15 +135,16 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			name:       "test 4",
 		},
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates:   []st.FitPredicate{st.TruePredicateExtender},
-					Prioritizers: []st.PriorityConfig{{Function: st.ErrorPrioritizerExtender, Weight: 10}},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
+					Prioritizers: []tf.PriorityConfig{{Function: tf.ErrorPrioritizerExtender, Weight: 10}},
 					Weight:       1,
 				},
 			},
@@ -146,20 +157,22 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			name: "test 5",
 		},
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates:   []st.FitPredicate{st.TruePredicateExtender},
-					Prioritizers: []st.PriorityConfig{{Function: st.Node1PrioritizerExtender, Weight: 10}},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
+					Prioritizers: []tf.PriorityConfig{{Function: tf.Node1PrioritizerExtender, Weight: 10}},
 					Weight:       1,
 				},
 				{
-					Predicates:   []st.FitPredicate{st.TruePredicateExtender},
-					Prioritizers: []st.PriorityConfig{{Function: st.Node2PrioritizerExtender, Weight: 10}},
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
+					Prioritizers: []tf.PriorityConfig{{Function: tf.Node2PrioritizerExtender, Weight: 10}},
 					Weight:       5,
 				},
 			},
@@ -172,16 +185,17 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			name: "test 6",
 		},
 		{
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterScorePlugin("Node2Prioritizer", st.NewNode2PrioritizerPlugin(), 20),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterScorePlugin("Node2Prioritizer", tf.NewNode2PrioritizerPlugin(), 20),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates:   []st.FitPredicate{st.TruePredicateExtender},
-					Prioritizers: []st.PriorityConfig{{Function: st.Node1PrioritizerExtender, Weight: 10}},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
+					Prioritizers: []tf.PriorityConfig{{Function: tf.Node1PrioritizerExtender, Weight: 10}},
 					Weight:       1,
 				},
 			},
@@ -201,16 +215,17 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			// If scheduler sends the pod by mistake, the test would fail
 			// because of the errors from errorPredicateExtender and/or
 			// errorPrioritizerExtender.
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterScorePlugin("Node2Prioritizer", st.NewNode2PrioritizerPlugin(), 1),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterScorePlugin("Node2Prioritizer", tf.NewNode2PrioritizerPlugin(), 1),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates:   []st.FitPredicate{st.ErrorPredicateExtender},
-					Prioritizers: []st.PriorityConfig{{Function: st.ErrorPrioritizerExtender, Weight: 10}},
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.ErrorPredicateExtender},
+					Prioritizers: []tf.PriorityConfig{{Function: tf.ErrorPrioritizerExtender, Weight: 10}},
 					UnInterested: true,
 				},
 			},
@@ -229,18 +244,21 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			//
 			// If scheduler did not ignore the extender, the test would fail
 			// because of the errors from errorPredicateExtender.
-			registerPlugins: []st.RegisterPluginFunc{
-				st.RegisterFilterPlugin("TrueFilter", st.NewTrueFilterPlugin),
-				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterScorePlugin("EqualPrioritizerPlugin", tf.NewEqualPrioritizerPlugin(), 1),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
-			extenders: []st.FakeExtender{
+			extenders: []tf.FakeExtender{
 				{
-					Predicates: []st.FitPredicate{st.ErrorPredicateExtender},
-					Ignorable:  true,
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.ErrorPredicateExtender},
+					Ignorable:    true,
 				},
 				{
-					Predicates: []st.FitPredicate{st.Node1PredicateExtender},
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.Node1PredicateExtender},
 				},
 			},
 			nodes:      []string{"node1", "node2"},
@@ -251,6 +269,49 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 				FeasibleNodes:  1,
 			},
 			name: "test 9",
+		},
+		{
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterFilterPlugin("TrueFilter", tf.NewTrueFilterPlugin),
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			},
+			extenders: []tf.FakeExtender{
+				{
+					ExtenderName: "FakeExtender1",
+					Predicates:   []tf.FitPredicate{tf.TruePredicateExtender},
+				},
+				{
+					ExtenderName: "FakeExtender2",
+					Predicates:   []tf.FitPredicate{tf.Node1PredicateExtender},
+				},
+			},
+			nodes: []string{"node1", "node2"},
+			expectedResult: ScheduleResult{
+				SuggestedHost:  "node1",
+				EvaluatedNodes: 2,
+				FeasibleNodes:  1,
+			},
+			name: "test 10 - no scoring, extender filters configured, multiple feasible nodes are evaluated",
+		},
+		{
+			registerPlugins: []tf.RegisterPluginFunc{
+				tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+			},
+			extenders: []tf.FakeExtender{
+				{
+					ExtenderName: "FakeExtender1",
+					Binder:       func() error { return nil },
+				},
+			},
+			nodes: []string{"node1", "node2"},
+			expectedResult: ScheduleResult{
+				SuggestedHost:  "node1",
+				EvaluatedNodes: 1,
+				FeasibleNodes:  1,
+			},
+			name: "test 11 - no scoring, no prefilters or  extender filters configured, a single feasible node is evaluated",
 		},
 	}
 
@@ -263,26 +324,37 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			for ii := range test.extenders {
 				extenders = append(extenders, &test.extenders[ii])
 			}
-			cache := internalcache.New(time.Duration(0), wait.NeverStop)
+			logger, ctx := ktesting.NewTestContext(t)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+
+			cache := internalcache.New(ctx, time.Duration(0))
 			for _, name := range test.nodes {
-				cache.AddNode(createNode(name))
+				cache.AddNode(logger, createNode(name))
 			}
-			fwk, err := st.NewFramework(
+			fwk, err := tf.NewFramework(
+				ctx,
 				test.registerPlugins, "",
 				runtime.WithClientSet(client),
 				runtime.WithInformerFactory(informerFactory),
 				runtime.WithPodNominator(internalqueue.NewPodNominator(informerFactory.Core().V1().Pods().Lister())),
+				runtime.WithLogger(logger),
 			)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			scheduler := NewGenericScheduler(
-				cache,
-				emptySnapshot,
-				schedulerapi.DefaultPercentageOfNodesToScore)
+			sched := &Scheduler{
+				Cache:                    cache,
+				nodeInfoSnapshot:         emptySnapshot,
+				percentageOfNodesToScore: schedulerapi.DefaultPercentageOfNodesToScore,
+				Extenders:                extenders,
+				logger:                   logger,
+			}
+			sched.applyDefaultHandlers()
+
 			podIgnored := &v1.Pod{}
-			result, err := scheduler.Schedule(context.Background(), extenders, fwk, framework.NewCycleState(), podIgnored)
+			result, err := sched.SchedulePod(ctx, fwk, framework.NewCycleState(), podIgnored)
 			if test.expectsErr {
 				if err == nil {
 					t.Errorf("Unexpected non-error, result %+v", result)
@@ -307,7 +379,7 @@ func createNode(name string) *v1.Node {
 
 func TestIsInterested(t *testing.T) {
 	mem := &HTTPExtender{
-		managedResources: sets.NewString(),
+		managedResources: sets.New[string](),
 	}
 	mem.managedResources.Insert("memory")
 
@@ -320,7 +392,7 @@ func TestIsInterested(t *testing.T) {
 		{
 			label: "Empty managed resources",
 			extender: &HTTPExtender{
-				managedResources: sets.NewString(),
+				managedResources: sets.New[string](),
 			},
 			pod:  &v1.Pod{},
 			want: true,
@@ -328,62 +400,170 @@ func TestIsInterested(t *testing.T) {
 		{
 			label:    "Managed memory, empty resources",
 			extender: mem,
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: "app",
-						},
-					},
-				},
-			},
-			want: false,
+			pod:      st.MakePod().Container("app").Obj(),
+			want:     false,
 		},
 		{
-			label:    "Managed memory, container memory",
+			label:    "Managed memory, container memory with Requests",
 			extender: mem,
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: "app",
-							Resources: v1.ResourceRequirements{
-								Requests: v1.ResourceList{"memory": resource.Quantity{}},
-								Limits:   v1.ResourceList{"memory": resource.Quantity{}},
-							},
-						},
-					},
-				},
-			},
+			pod: st.MakePod().Req(map[v1.ResourceName]string{
+				"memory": "0",
+			}).Obj(),
+			want: true,
+		},
+		{
+			label:    "Managed memory, container memory with Limits",
+			extender: mem,
+			pod: st.MakePod().Lim(map[v1.ResourceName]string{
+				"memory": "0",
+			}).Obj(),
 			want: true,
 		},
 		{
 			label:    "Managed memory, init container memory",
 			extender: mem,
-			pod: &v1.Pod{
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: "app",
-						},
-					},
-					InitContainers: []v1.Container{
-						{
-							Name: "init",
-							Resources: v1.ResourceRequirements{
-								Requests: v1.ResourceList{"memory": resource.Quantity{}},
-								Limits:   v1.ResourceList{"memory": resource.Quantity{}},
-							},
-						},
-					},
-				},
-			},
+			pod: st.MakePod().Container("app").InitReq(map[v1.ResourceName]string{
+				"memory": "0",
+			}).Obj(),
 			want: true,
 		},
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			if got := tc.extender.IsInterested(tc.pod); got != tc.want {
 				t.Fatalf("IsInterested(%v) = %v, wanted %v", tc.pod, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConvertToMetaVictims(t *testing.T) {
+	tests := []struct {
+		name              string
+		nodeNameToVictims map[string]*extenderv1.Victims
+		want              map[string]*extenderv1.MetaVictims
+	}{
+		{
+			name: "test NumPDBViolations is transferred from nodeNameToVictims to nodeNameToMetaVictims",
+			nodeNameToVictims: map[string]*extenderv1.Victims{
+				"node1": {
+					Pods: []*v1.Pod{
+						st.MakePod().Name("pod1").UID("uid1").Obj(),
+						st.MakePod().Name("pod3").UID("uid3").Obj(),
+					},
+					NumPDBViolations: 1,
+				},
+				"node2": {
+					Pods: []*v1.Pod{
+						st.MakePod().Name("pod2").UID("uid2").Obj(),
+						st.MakePod().Name("pod4").UID("uid4").Obj(),
+					},
+					NumPDBViolations: 2,
+				},
+			},
+			want: map[string]*extenderv1.MetaVictims{
+				"node1": {
+					Pods: []*extenderv1.MetaPod{
+						{UID: "uid1"},
+						{UID: "uid3"},
+					},
+					NumPDBViolations: 1,
+				},
+				"node2": {
+					Pods: []*extenderv1.MetaPod{
+						{UID: "uid2"},
+						{UID: "uid4"},
+					},
+					NumPDBViolations: 2,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := convertToMetaVictims(tt.nodeNameToVictims); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("convertToMetaVictims() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestConvertToVictims(t *testing.T) {
+	tests := []struct {
+		name                  string
+		httpExtender          *HTTPExtender
+		nodeNameToMetaVictims map[string]*extenderv1.MetaVictims
+		nodeNames             []string
+		podsInNodeList        []*v1.Pod
+		nodeInfos             framework.NodeInfoLister
+		want                  map[string]*extenderv1.Victims
+		wantErr               bool
+	}{
+		{
+			name:         "test NumPDBViolations is transferred from NodeNameToMetaVictims to newNodeNameToVictims",
+			httpExtender: &HTTPExtender{},
+			nodeNameToMetaVictims: map[string]*extenderv1.MetaVictims{
+				"node1": {
+					Pods: []*extenderv1.MetaPod{
+						{UID: "uid1"},
+						{UID: "uid3"},
+					},
+					NumPDBViolations: 1,
+				},
+				"node2": {
+					Pods: []*extenderv1.MetaPod{
+						{UID: "uid2"},
+						{UID: "uid4"},
+					},
+					NumPDBViolations: 2,
+				},
+			},
+			nodeNames: []string{"node1", "node2"},
+			podsInNodeList: []*v1.Pod{
+				st.MakePod().Name("pod1").UID("uid1").Obj(),
+				st.MakePod().Name("pod2").UID("uid2").Obj(),
+				st.MakePod().Name("pod3").UID("uid3").Obj(),
+				st.MakePod().Name("pod4").UID("uid4").Obj(),
+			},
+			nodeInfos: nil,
+			want: map[string]*extenderv1.Victims{
+				"node1": {
+					Pods: []*v1.Pod{
+						st.MakePod().Name("pod1").UID("uid1").Obj(),
+						st.MakePod().Name("pod3").UID("uid3").Obj(),
+					},
+					NumPDBViolations: 1,
+				},
+				"node2": {
+					Pods: []*v1.Pod{
+						st.MakePod().Name("pod2").UID("uid2").Obj(),
+						st.MakePod().Name("pod4").UID("uid4").Obj(),
+					},
+					NumPDBViolations: 2,
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// nodeInfos instantiations
+			nodeInfoList := make([]*framework.NodeInfo, 0, len(tt.nodeNames))
+			for i, nm := range tt.nodeNames {
+				nodeInfo := framework.NewNodeInfo()
+				node := createNode(nm)
+				nodeInfo.SetNode(node)
+				nodeInfo.AddPod(tt.podsInNodeList[i])
+				nodeInfo.AddPod(tt.podsInNodeList[i+2])
+				nodeInfoList = append(nodeInfoList, nodeInfo)
+			}
+			tt.nodeInfos = tf.NodeInfoLister(nodeInfoList)
+
+			got, err := tt.httpExtender.convertToVictims(tt.nodeNameToMetaVictims, tt.nodeInfos)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("convertToVictims() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("convertToVictims() got = %v, want %v", got, tt.want)
 			}
 		})
 	}

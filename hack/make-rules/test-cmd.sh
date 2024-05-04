@@ -62,9 +62,9 @@ function run_kube_apiserver() {
   AUTHORIZATION_MODE="RBAC,AlwaysAllow"
 
   # Enable features
-  ENABLE_FEATURE_GATES="ServerSideApply=true"
+  ENABLE_FEATURE_GATES=""
 
-  "${KUBE_OUTPUT_HOSTBIN}/kube-apiserver" \
+  "${THIS_PLATFORM_BIN}/kube-apiserver" \
     --bind-address="127.0.0.1" \
     --authorization-mode="${AUTHORIZATION_MODE}" \
     --secure-port="${SECURE_API_PORT}" \
@@ -80,7 +80,7 @@ function run_kube_apiserver() {
     --storage-media-type="${KUBE_TEST_API_STORAGE_TYPE-}" \
     --cert-dir="${TMPDIR:-/tmp/}" \
     --service-cluster-ip-range="10.0.0.0/24" \
-    --client-ca-file=hack/testdata/ca.crt \
+    --client-ca-file=hack/testdata/ca/ca.crt \
     --token-auth-file=hack/testdata/auth-tokens.csv 1>&2 &
   export APISERVER_PID=$!
 
@@ -119,8 +119,10 @@ current-context: local-context
 EOF
 
   kube::log::status "Starting controller-manager"
-  "${KUBE_OUTPUT_HOSTBIN}/kube-controller-manager" \
+  "${THIS_PLATFORM_BIN}/kube-controller-manager" \
     --kube-api-content-type="${KUBE_TEST_API_TYPE-}" \
+    --cluster-signing-cert-file=hack/testdata/ca/ca.crt \
+    --cluster-signing-key-file=hack/testdata/ca/ca.key \
     --kubeconfig="${config}" 1>&2 &
   export CTLRMGR_PID=$!
 

@@ -23,9 +23,11 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	v1helper "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
+	"k8s.io/kubernetes/pkg/scheduler/util"
 )
 
 // TaintToleration is a plugin that checks if a pod tolerates a node's taints.
@@ -54,30 +56,47 @@ func (pl *TaintToleration) Name() string {
 
 // EventsToRegister returns the possible events that may make a Pod
 // failed by this plugin schedulable.
-func (pl *TaintToleration) EventsToRegister() []framework.ClusterEvent {
-	return []framework.ClusterEvent{
-		{Resource: framework.Node, ActionType: framework.Add | framework.UpdateNodeTaint},
+func (pl *TaintToleration) EventsToRegister() []framework.ClusterEventWithHint {
+	return []framework.ClusterEventWithHint{
+		{Event: framework.ClusterEvent{Resource: framework.Node, ActionType: framework.Add | framework.Update}, QueueingHintFn: pl.isSchedulableAfterNodeChange},
 	}
+}
+
+// isSchedulableAfterNodeChange is invoked for all node events reported by
+// an informer. It checks whether that change made a previously unschedulable
+// pod schedulable.
+func (pl *TaintToleration) isSchedulableAfterNodeChange(logger klog.Logger, pod *v1.Pod, oldObj, newObj interface{}) (framework.QueueingHint, error) {
+	originalNode, modifiedNode, err := util.As[*v1.Node](oldObj, newObj)
+	if err != nil {
+		return framework.Queue, err
+	}
+
+	wasUntolerated := true
+	if originalNode != nil {
+		_, wasUntolerated = v1helper.FindMatchingUntoleratedTaint(originalNode.Spec.Taints, pod.Spec.Tolerations, helper.DoNotScheduleTaintsFilterFunc())
+	}
+
+	_, isUntolerated := v1helper.FindMatchingUntoleratedTaint(modifiedNode.Spec.Taints, pod.Spec.Tolerations, helper.DoNotScheduleTaintsFilterFunc())
+
+	if wasUntolerated && !isUntolerated {
+		logger.V(5).Info("node was created or updated, and this may make the Pod rejected by TaintToleration plugin in the previous scheduling cycle schedulable", "pod", klog.KObj(pod), "node", klog.KObj(modifiedNode))
+		return framework.Queue, nil
+	}
+
+	logger.V(5).Info("node was created or updated, but it doesn't change the TaintToleration plugin's decision", "pod", klog.KObj(pod), "node", klog.KObj(modifiedNode))
+	return framework.QueueSkip, nil
 }
 
 // Filter invoked at the filter extension point.
 func (pl *TaintToleration) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
-	if nodeInfo == nil || nodeInfo.Node() == nil {
-		return framework.AsStatus(fmt.Errorf("invalid nodeInfo"))
-	}
+	node := nodeInfo.Node()
 
-	filterPredicate := func(t *v1.Taint) bool {
-		// PodToleratesNodeTaints is only interested in NoSchedule and NoExecute taints.
-		return t.Effect == v1.TaintEffectNoSchedule || t.Effect == v1.TaintEffectNoExecute
-	}
-
-	taint, isUntolerated := v1helper.FindMatchingUntoleratedTaint(nodeInfo.Node().Spec.Taints, pod.Spec.Tolerations, filterPredicate)
+	taint, isUntolerated := v1helper.FindMatchingUntoleratedTaint(node.Spec.Taints, pod.Spec.Tolerations, helper.DoNotScheduleTaintsFilterFunc())
 	if !isUntolerated {
 		return nil
 	}
 
-	errReason := fmt.Sprintf("node(s) had taint {%s: %s}, that the pod didn't tolerate",
-		taint.Key, taint.Value)
+	errReason := fmt.Sprintf("node(s) had untolerated taint {%s: %s}", taint.Key, taint.Value)
 	return framework.NewStatus(framework.UnschedulableAndUnresolvable, errReason)
 }
 
@@ -104,7 +123,7 @@ func getAllTolerationPreferNoSchedule(tolerations []v1.Toleration) (tolerationLi
 }
 
 // PreScore builds and writes cycle state used by Score and NormalizeScore.
-func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) *framework.Status {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -119,7 +138,7 @@ func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.C
 func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) {
 	c, err := cycleState.Read(preScoreStateKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read %q from cycleState: %v", preScoreStateKey, err)
+		return nil, fmt.Errorf("failed to read %q from cycleState: %w", preScoreStateKey, err)
 	}
 
 	s, ok := c.(*preScoreState)
@@ -172,6 +191,6 @@ func (pl *TaintToleration) ScoreExtensions() framework.ScoreExtensions {
 }
 
 // New initializes a new plugin and returns it.
-func New(_ runtime.Object, h framework.Handle) (framework.Plugin, error) {
+func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plugin, error) {
 	return &TaintToleration{handle: h}, nil
 }

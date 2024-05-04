@@ -27,7 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -51,11 +51,11 @@ type ServiceAccountOpts struct {
 	PrintFlags *genericclioptions.PrintFlags
 	PrintObj   func(obj runtime.Object) error
 	// Name of resource being created
-	Name             string
-	DryRunStrategy   cmdutil.DryRunStrategy
-	DryRunVerifier   *resource.DryRunVerifier
-	CreateAnnotation bool
-	FieldManager     string
+	Name                string
+	DryRunStrategy      cmdutil.DryRunStrategy
+	ValidationDirective string
+	CreateAnnotation    bool
+	FieldManager        string
 
 	Namespace        string
 	EnforceNamespace bool
@@ -63,11 +63,11 @@ type ServiceAccountOpts struct {
 	Mapper meta.RESTMapper
 	Client *coreclient.CoreV1Client
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 // NewServiceAccountOpts creates a new *ServiceAccountOpts with sane defaults
-func NewServiceAccountOpts(ioStreams genericclioptions.IOStreams) *ServiceAccountOpts {
+func NewServiceAccountOpts(ioStreams genericiooptions.IOStreams) *ServiceAccountOpts {
 	return &ServiceAccountOpts{
 		PrintFlags: genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
 		IOStreams:  ioStreams,
@@ -75,7 +75,7 @@ func NewServiceAccountOpts(ioStreams genericclioptions.IOStreams) *ServiceAccoun
 }
 
 // NewCmdCreateServiceAccount is a macro command to create a new service account
-func NewCmdCreateServiceAccount(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdCreateServiceAccount(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewServiceAccountOpts(ioStreams)
 
 	cmd := &cobra.Command{
@@ -124,11 +124,6 @@ func (o *ServiceAccountOpts) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 
 	o.Namespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -144,6 +139,11 @@ func (o *ServiceAccountOpts) Complete(f cmdutil.Factory, cmd *cobra.Command, arg
 
 	o.PrintObj = func(obj runtime.Object) error {
 		return printer.PrintObj(obj, o.Out)
+	}
+
+	o.ValidationDirective, err = cmdutil.GetValidationDirective(cmd)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -173,10 +173,8 @@ func (o *ServiceAccountOpts) Run() error {
 		if o.FieldManager != "" {
 			createOptions.FieldManager = o.FieldManager
 		}
+		createOptions.FieldValidation = o.ValidationDirective
 		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(serviceAccount.GroupVersionKind()); err != nil {
-				return err
-			}
 			createOptions.DryRun = []string{metav1.DryRunAll}
 		}
 		serviceAccount, err = o.Client.ServiceAccounts(o.Namespace).Create(context.TODO(), serviceAccount, createOptions)

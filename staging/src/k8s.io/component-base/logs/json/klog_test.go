@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package logs
+package json
 
 import (
 	"bytes"
@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap/zapcore"
 
+	logsapi "k8s.io/component-base/logs/api/v1"
 	"k8s.io/klog/v2"
 )
 
@@ -65,49 +66,49 @@ func TestKlogIntegration(t *testing.T) {
 			fun: func() {
 				klog.Info("test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "V(1).Info",
 			fun: func() {
 				klog.V(1).Info("test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":1}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":1}`,
 		},
 		{
 			name: "Infof",
 			fun: func() {
 				klog.Infof("test %d", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "V(1).Infof",
 			fun: func() {
 				klog.V(1).Infof("test %d", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":1}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":1}`,
 		},
 		{
 			name: "Infoln",
 			fun: func() {
 				klog.Infoln("test", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "V(1).Infoln",
 			fun: func() {
 				klog.V(1).Infoln("test", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":1}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":1}`,
 		},
 		{
 			name: "InfoDepth",
 			fun: func() {
 				klog.InfoDepth(1, "test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "InfoS",
@@ -152,10 +153,10 @@ func TestKlogIntegration(t *testing.T) {
 			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"some","v":0,"pod":{"name":"pod-1","namespace":"kube-system"}}`,
 		},
 		{
-			name: "KObjs",
+			name: "KObjSlice",
 			fun: func() {
 				klog.InfoS("several", "pods",
-					klog.KObjs([]interface{}{
+					klog.KObjSlice([]interface{}{
 						&kmeta{Name: "pod-1", Namespace: "kube-system"},
 						&kmeta{Name: "pod-2", Namespace: "kube-system"},
 					}))
@@ -167,56 +168,56 @@ func TestKlogIntegration(t *testing.T) {
 			fun: func() {
 				klog.Warning("test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "WarningDepth",
 			fun: func() {
 				klog.WarningDepth(1, "test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "Warningln",
 			fun: func() {
 				klog.Warningln("test", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "Warningf",
 			fun: func() {
 				klog.Warningf("test %d", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n","v":0}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1","v":0}`,
 		},
 		{
 			name: "Error",
 			fun: func() {
 				klog.Error("test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n"}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1"}`,
 		},
 		{
 			name: "ErrorDepth",
 			fun: func() {
 				klog.ErrorDepth(1, "test ", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n"}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1"}`,
 		},
 		{
 			name: "Errorln",
 			fun: func() {
 				klog.Errorln("test", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n"}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1"}`,
 		},
 		{
 			name: "Errorf",
 			fun: func() {
 				klog.Errorf("test %d", 1)
 			},
-			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1\n"}`,
+			format: `{"ts":%f,"caller":"json/klog_test.go:%d","msg":"test 1"}`,
 		},
 		{
 			name: "ErrorS",
@@ -239,7 +240,9 @@ func TestKlogIntegration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var buffer bytes.Buffer
 			writer := zapcore.AddSync(&buffer)
-			logger, _ := NewJSONLogger(writer, writer)
+			// This level is high enough to enable all log messages from this test.
+			verbosityLevel := logsapi.VerbosityLevel(100)
+			logger, _ := NewJSONLogger(verbosityLevel, writer, nil, nil)
 			klog.SetLogger(logger)
 			defer klog.ClearLogger()
 
@@ -270,7 +273,7 @@ func TestKlogIntegration(t *testing.T) {
 func TestKlogV(t *testing.T) {
 	var buffer testBuff
 	writer := zapcore.AddSync(&buffer)
-	logger, _ := NewJSONLogger(writer, writer)
+	logger, _ := NewJSONLogger(100, writer, nil, nil)
 	klog.SetLogger(logger)
 	defer klog.ClearLogger()
 	fs := flag.FlagSet{}

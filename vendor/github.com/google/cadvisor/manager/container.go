@@ -17,9 +17,9 @@ package manager
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -40,6 +40,7 @@ import (
 	"github.com/google/cadvisor/utils/cpuload"
 
 	"github.com/docker/go-units"
+
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
 )
@@ -64,6 +65,7 @@ type containerInfo struct {
 }
 
 type containerData struct {
+	oomEvents                uint64
 	handler                  container.ContainerHandler
 	info                     containerInfo
 	memoryCache              *memory.InMemoryCache
@@ -95,16 +97,11 @@ type containerData struct {
 	// Runs custom metric collectors.
 	collectorManager collector.CollectorManager
 
-	// nvidiaCollector updates stats for Nvidia GPUs attached to the container.
-	nvidiaCollector stats.Collector
-
 	// perfCollector updates stats for perf_event cgroup controller.
 	perfCollector stats.Collector
 
 	// resctrlCollector updates stats for resctrl controller.
 	resctrlCollector stats.Collector
-
-	oomEvents uint64
 }
 
 // jitter returns a time.Duration between duration and duration + maxFactor * duration,
@@ -246,7 +243,7 @@ func (cd *containerData) ReadFile(filepath string, inHostNamespace bool) ([]byte
 	for _, pid := range pids {
 		filePath := path.Join(rootfs, "/proc", pid, "/root", filepath)
 		klog.V(3).Infof("Trying path %q", filePath)
-		data, err := ioutil.ReadFile(filePath)
+		data, err := os.ReadFile(filePath)
 		if err == nil {
 			return data, err
 		}
@@ -326,7 +323,7 @@ func (cd *containerData) parseProcessList(cadvisorContainer string, inHostNamesp
 
 		var fdCount int
 		dirPath := path.Join(rootfs, "/proc", strconv.Itoa(processInfo.Pid), "fd")
-		fds, err := ioutil.ReadDir(dirPath)
+		fds, err := os.ReadDir(dirPath)
 		if err != nil {
 			klog.V(4).Infof("error while listing directory %q to measure fd count: %v", dirPath, err)
 			continue
@@ -449,7 +446,6 @@ func newContainerData(containerName string, memoryCache *memory.InMemoryCache, h
 		onDemandChan:             make(chan chan struct{}, 100),
 		clock:                    clock,
 		perfCollector:            &stats.NoopCollector{},
-		nvidiaCollector:          &stats.NoopCollector{},
 		resctrlCollector:         &stats.NoopCollector{},
 	}
 	cont.info.ContainerReference = ref
@@ -486,7 +482,7 @@ func (cd *containerData) nextHousekeepingInterval() time.Duration {
 		stats, err := cd.memoryCache.RecentStats(cd.info.Name, empty, empty, 2)
 		if err != nil {
 			if cd.allowErrorLogging() {
-				klog.Warningf("Failed to get RecentStats(%q) while determining the next housekeeping: %v", cd.info.Name, err)
+				klog.V(4).Infof("Failed to get RecentStats(%q) while determining the next housekeeping: %v", cd.info.Name, err)
 			}
 		} else if len(stats) == 2 {
 			// TODO(vishnuk): Use no processes as a signal.
@@ -689,12 +685,6 @@ func (cd *containerData) updateStats() error {
 		}
 	}
 
-	var nvidiaStatsErr error
-	if cd.nvidiaCollector != nil {
-		// This updates the Accelerators field of the stats struct
-		nvidiaStatsErr = cd.nvidiaCollector.UpdateStats(stats)
-	}
-
 	perfStatsErr := cd.perfCollector.UpdateStats(stats)
 
 	resctrlStatsErr := cd.resctrlCollector.UpdateStats(stats)
@@ -718,10 +708,6 @@ func (cd *containerData) updateStats() error {
 	}
 	if statsErr != nil {
 		return statsErr
-	}
-	if nvidiaStatsErr != nil {
-		klog.Errorf("error occurred while collecting nvidia stats for container %s: %s", cInfo.Name, err)
-		return nvidiaStatsErr
 	}
 	if perfStatsErr != nil {
 		klog.Errorf("error occurred while collecting perf stats for container %s: %s", cInfo.Name, err)

@@ -16,7 +16,6 @@ package common
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math"
 	"os"
 	"path"
@@ -76,7 +75,11 @@ func getSpecInternal(cgroupPaths map[string]string, machineInfoFactory info.Mach
 		dir, err := os.Stat(cgroupPathDir)
 		if err == nil && dir.ModTime().Before(lowestTime) {
 			lowestTime = dir.ModTime()
+		} else if os.IsNotExist(err) {
+			// Directory does not exist, skip checking for files within.
+			continue
 		}
+
 		// The modified time of the cgroup directory sometimes changes whenever a subcontainer is created.
 		// eg. /docker will have creation time matching the creation of latest docker container.
 		// Use clone_children/events as a workaround as it isn't usually modified. It is only likely changed
@@ -105,7 +108,7 @@ func getSpecInternal(cgroupPaths map[string]string, machineInfoFactory info.Mach
 	}
 
 	// CPU.
-	cpuRoot, ok := getControllerPath(cgroupPaths, "cpu", cgroup2UnifiedMode)
+	cpuRoot, ok := GetControllerPath(cgroupPaths, "cpu", cgroup2UnifiedMode)
 	if ok {
 		if utils.FileExists(cpuRoot) {
 			if cgroup2UnifiedMode {
@@ -152,7 +155,7 @@ func getSpecInternal(cgroupPaths map[string]string, machineInfoFactory info.Mach
 
 	// Cpu Mask.
 	// This will fail for non-unified hierarchies. We'll return the whole machine mask in that case.
-	cpusetRoot, ok := getControllerPath(cgroupPaths, "cpuset", cgroup2UnifiedMode)
+	cpusetRoot, ok := GetControllerPath(cgroupPaths, "cpuset", cgroup2UnifiedMode)
 	if ok {
 		if utils.FileExists(cpusetRoot) {
 			spec.HasCpu = true
@@ -167,12 +170,12 @@ func getSpecInternal(cgroupPaths map[string]string, machineInfoFactory info.Mach
 	}
 
 	// Memory
-	memoryRoot, ok := getControllerPath(cgroupPaths, "memory", cgroup2UnifiedMode)
+	memoryRoot, ok := GetControllerPath(cgroupPaths, "memory", cgroup2UnifiedMode)
 	if ok {
 		if cgroup2UnifiedMode {
 			if utils.FileExists(path.Join(memoryRoot, "memory.max")) {
 				spec.HasMemory = true
-				spec.Memory.Reservation = readUInt64(memoryRoot, "memory.high")
+				spec.Memory.Reservation = readUInt64(memoryRoot, "memory.min")
 				spec.Memory.Limit = readUInt64(memoryRoot, "memory.max")
 				spec.Memory.SwapLimit = readUInt64(memoryRoot, "memory.swap.max")
 			}
@@ -195,7 +198,7 @@ func getSpecInternal(cgroupPaths map[string]string, machineInfoFactory info.Mach
 	}
 
 	// Processes, read it's value from pids path directly
-	pidsRoot, ok := getControllerPath(cgroupPaths, "pids", cgroup2UnifiedMode)
+	pidsRoot, ok := GetControllerPath(cgroupPaths, "pids", cgroup2UnifiedMode)
 	if ok {
 		if utils.FileExists(pidsRoot) {
 			spec.HasProcesses = true
@@ -210,14 +213,15 @@ func getSpecInternal(cgroupPaths map[string]string, machineInfoFactory info.Mach
 	if cgroup2UnifiedMode {
 		ioControllerName = "io"
 	}
-	if blkioRoot, ok := cgroupPaths[ioControllerName]; ok && utils.FileExists(blkioRoot) {
+
+	if blkioRoot, ok := GetControllerPath(cgroupPaths, ioControllerName, cgroup2UnifiedMode); ok && utils.FileExists(blkioRoot) {
 		spec.HasDiskIo = true
 	}
 
 	return spec, nil
 }
 
-func getControllerPath(cgroupPaths map[string]string, controllerName string, cgroup2UnifiedMode bool) (string, bool) {
+func GetControllerPath(cgroupPaths map[string]string, controllerName string, cgroup2UnifiedMode bool) (string, bool) {
 
 	ok := false
 	path := ""
@@ -234,7 +238,7 @@ func readString(dirpath string, file string) string {
 	cgroupFile := path.Join(dirpath, file)
 
 	// Read
-	out, err := ioutil.ReadFile(cgroupFile)
+	out, err := os.ReadFile(cgroupFile)
 	if err != nil {
 		// Ignore non-existent files
 		if !os.IsNotExist(err) {
@@ -435,4 +439,21 @@ func (m deviceIdentifierMap) Find(major, minor uint64, namer DeviceNamer) string
 	s, _ := namer.DeviceName(major, minor)
 	m[d] = s
 	return s
+}
+
+// RemoveNetMetrics is used to remove any network metrics from the given MetricSet.
+// It returns the original set as is if remove is false, or if there are no metrics
+// to remove.
+func RemoveNetMetrics(metrics container.MetricSet, remove bool) container.MetricSet {
+	if !remove {
+		return metrics
+	}
+
+	// Check if there is anything we can remove, to avoid useless copying.
+	if !metrics.HasAny(container.AllNetworkMetrics) {
+		return metrics
+	}
+
+	// A copy of all metrics except for network ones.
+	return metrics.Difference(container.AllNetworkMetrics)
 }

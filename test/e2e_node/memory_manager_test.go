@@ -37,14 +37,16 @@ import (
 	kubeletpodresourcesv1 "k8s.io/kubelet/pkg/apis/podresources/v1"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/apis/podresources"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/cm/memorymanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/util"
+	"k8s.io/kubernetes/test/e2e/feature"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	admissionapi "k8s.io/pod-security-admission/api"
+	"k8s.io/utils/cpuset"
 	"k8s.io/utils/pointer"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
 
@@ -64,7 +66,7 @@ type memoryManagerCtnAttributes struct {
 	hugepages2Mi string
 }
 
-//  makeMemoryManagerContainers returns slice of containers with provided attributes and indicator of hugepages mount needed for those.
+// makeMemoryManagerContainers returns slice of containers with provided attributes and indicator of hugepages mount needed for those.
 func makeMemoryManagerContainers(ctnCmd string, ctnAttributes []memoryManagerCtnAttributes) ([]v1.Container, bool) {
 	hugepagesMount := false
 	var containers []v1.Container
@@ -143,12 +145,12 @@ func getMemoryManagerState() (*state.MemoryManagerCheckpoint, error) {
 
 	out, err := exec.Command("/bin/sh", "-c", fmt.Sprintf("cat %s", memoryManagerStateFile)).Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to run command 'cat %s': out: %s, err: %v", memoryManagerStateFile, out, err)
+		return nil, fmt.Errorf("failed to run command 'cat %s': out: %s, err: %w", memoryManagerStateFile, out, err)
 	}
 
 	memoryManagerCheckpoint := &state.MemoryManagerCheckpoint{}
 	if err := json.Unmarshal(out, memoryManagerCheckpoint); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal memory manager state file: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal memory manager state file: %w", err)
 	}
 	return memoryManagerCheckpoint, nil
 }
@@ -172,20 +174,20 @@ func getAllocatableMemoryFromStateFile(s *state.MemoryManagerCheckpoint) []state
 	return allocatableMemory
 }
 
-type kubeletParams struct {
-	memoryManagerPolicy  string
+type memoryManagerKubeletParams struct {
+	policy               string
 	systemReservedMemory []kubeletconfig.MemoryReservation
 	systemReserved       map[string]string
 	kubeReserved         map[string]string
 	evictionHard         map[string]string
 }
 
-func updateKubeletConfigWithMemoryManagerParams(initialCfg *kubeletconfig.KubeletConfiguration, params *kubeletParams) {
+func updateKubeletConfigWithMemoryManagerParams(initialCfg *kubeletconfig.KubeletConfiguration, params *memoryManagerKubeletParams) {
 	if initialCfg.FeatureGates == nil {
 		initialCfg.FeatureGates = map[string]bool{}
 	}
 
-	initialCfg.MemoryManagerPolicy = params.memoryManagerPolicy
+	initialCfg.MemoryManagerPolicy = params.policy
 
 	// update system-reserved
 	if initialCfg.SystemReserved == nil {
@@ -215,9 +217,7 @@ func updateKubeletConfigWithMemoryManagerParams(initialCfg *kubeletconfig.Kubele
 	if initialCfg.ReservedMemory == nil {
 		initialCfg.ReservedMemory = []kubeletconfig.MemoryReservation{}
 	}
-	for _, memoryReservation := range params.systemReservedMemory {
-		initialCfg.ReservedMemory = append(initialCfg.ReservedMemory, memoryReservation)
-	}
+	initialCfg.ReservedMemory = append(initialCfg.ReservedMemory, params.systemReservedMemory...)
 }
 
 func getAllNUMANodes() []int {
@@ -242,7 +242,7 @@ func getAllNUMANodes() []int {
 }
 
 // Serial because the test updates kubelet configuration.
-var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager]", func() {
+var _ = SIGDescribe("Memory Manager", framework.WithDisruptive(), framework.WithSerial(), feature.MemoryManager, func() {
 	// TODO: add more complex tests that will include interaction between CPUManager, MemoryManager and TopologyManager
 	var (
 		allNUMANodes             []int
@@ -253,9 +253,10 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 	)
 
 	f := framework.NewDefaultFramework("memory-manager-test")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 
 	memoryQuantity := resource.MustParse("1100Mi")
-	defaultKubeParams := &kubeletParams{
+	defaultKubeParams := &memoryManagerKubeletParams{
 		systemReservedMemory: []kubeletconfig.MemoryReservation{
 			{
 				NumaNode: 0,
@@ -269,21 +270,21 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 		evictionHard:   map[string]string{evictionHardMemory: "100Mi"},
 	}
 
-	verifyMemoryPinning := func(pod *v1.Pod, numaNodeIDs []int) {
+	verifyMemoryPinning := func(ctx context.Context, pod *v1.Pod, numaNodeIDs []int) {
 		ginkgo.By("Verifying the NUMA pinning")
 
-		output, err := e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, pod.Spec.Containers[0].Name)
+		output, err := e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, pod.Spec.Containers[0].Name)
 		framework.ExpectNoError(err)
 
 		currentNUMANodeIDs, err := cpuset.Parse(strings.Trim(output, "\n"))
 		framework.ExpectNoError(err)
 
-		framework.ExpectEqual(numaNodeIDs, currentNUMANodeIDs.ToSlice())
+		gomega.Expect(numaNodeIDs).To(gomega.Equal(currentNUMANodeIDs.List()))
 	}
 
-	waitingForHugepages := func(hugepagesCount int) {
-		gomega.Eventually(func() error {
-			node, err := f.ClientSet.CoreV1().Nodes().Get(context.TODO(), framework.TestContext.NodeName, metav1.GetOptions{})
+	waitingForHugepages := func(ctx context.Context, hugepagesCount int) {
+		gomega.Eventually(ctx, func(ctx context.Context) error {
+			node, err := f.ClientSet.CoreV1().Nodes().Get(ctx, framework.TestContext.NodeName, metav1.GetOptions{})
 			if err != nil {
 				return err
 			}
@@ -307,7 +308,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 		}, time.Minute, framework.Poll).Should(gomega.BeNil())
 	}
 
-	ginkgo.BeforeEach(func() {
+	ginkgo.BeforeEach(func(ctx context.Context) {
 		if isMultiNUMASupported == nil {
 			isMultiNUMASupported = pointer.BoolPtr(isMultiNUMA())
 		}
@@ -323,18 +324,18 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 		// allocate hugepages
 		if *is2MiHugepagesSupported {
 			ginkgo.By("Configuring hugepages")
-			gomega.Eventually(func() error {
+			gomega.Eventually(ctx, func() error {
 				return configureHugePages(hugepagesSize2M, hugepages2MiCount, pointer.IntPtr(0))
 			}, 30*time.Second, framework.Poll).Should(gomega.BeNil())
 		}
 	})
 
 	// dynamically update the kubelet configuration
-	ginkgo.JustBeforeEach(func() {
+	ginkgo.JustBeforeEach(func(ctx context.Context) {
 		// allocate hugepages
 		if *is2MiHugepagesSupported {
 			ginkgo.By("Waiting for hugepages resource to become available on the local node")
-			waitingForHugepages(hugepages2MiCount)
+			waitingForHugepages(ctx, hugepages2MiCount)
 
 			for i := 0; i < len(ctnParams); i++ {
 				ctnParams[i].hugepages2Mi = "8Mi"
@@ -346,16 +347,16 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 		}
 	})
 
-	ginkgo.JustAfterEach(func() {
+	ginkgo.JustAfterEach(func(ctx context.Context) {
 		// delete the test pod
 		if testPod != nil && testPod.Name != "" {
-			f.PodClient().DeleteSync(testPod.Name, metav1.DeleteOptions{}, 2*time.Minute)
+			e2epod.NewPodClient(f).DeleteSync(ctx, testPod.Name, metav1.DeleteOptions{}, 2*time.Minute)
 		}
 
 		// release hugepages
 		if *is2MiHugepagesSupported {
 			ginkgo.By("Releasing allocated hugepages")
-			gomega.Eventually(func() error {
+			gomega.Eventually(ctx, func() error {
 				// configure hugepages on the NUMA node 0 to avoid hugepages split across NUMA nodes
 				return configureHugePages(hugepagesSize2M, 0, pointer.IntPtr(0))
 			}, 90*time.Second, 15*time.Second).ShouldNot(gomega.HaveOccurred(), "failed to release hugepages")
@@ -363,9 +364,9 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 	})
 
 	ginkgo.Context("with static policy", func() {
-		tempSetCurrentKubeletConfig(f, func(initialConfig *kubeletconfig.KubeletConfiguration) {
+		tempSetCurrentKubeletConfig(f, func(ctx context.Context, initialConfig *kubeletconfig.KubeletConfiguration) {
 			kubeParams := *defaultKubeParams
-			kubeParams.memoryManagerPolicy = staticPolicy
+			kubeParams.policy = staticPolicy
 			updateKubeletConfigWithMemoryManagerParams(initialConfig, &kubeParams)
 		})
 
@@ -376,7 +377,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 		})
 
 		// TODO: move the test to pod resource API test suite, see - https://github.com/kubernetes/kubernetes/issues/101945
-		ginkgo.It("should report memory data during request to pod resources GetAllocatableResources", func() {
+		ginkgo.It("should report memory data during request to pod resources GetAllocatableResources", func(ctx context.Context) {
 			endpoint, err := util.LocalEndpoint(defaultPodResourcesPath, podresources.Socket)
 			framework.ExpectNoError(err)
 
@@ -384,7 +385,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 			framework.ExpectNoError(err)
 			defer conn.Close()
 
-			resp, err := cli.GetAllocatableResources(context.TODO(), &kubeletpodresourcesv1.AllocatableResourcesRequest{})
+			resp, err := cli.GetAllocatableResources(ctx, &kubeletpodresourcesv1.AllocatableResourcesRequest{})
 			framework.ExpectNoError(err)
 			gomega.Expect(resp.Memory).ToNot(gomega.BeEmpty())
 
@@ -392,16 +393,16 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 			framework.ExpectNoError(err)
 
 			stateAllocatableMemory := getAllocatableMemoryFromStateFile(stateData)
-			framework.ExpectEqual(len(resp.Memory), len(stateAllocatableMemory))
+			gomega.Expect(resp.Memory).To(gomega.HaveLen(len(stateAllocatableMemory)))
 
 			for _, containerMemory := range resp.Memory {
 				gomega.Expect(containerMemory.Topology).NotTo(gomega.BeNil())
-				framework.ExpectEqual(len(containerMemory.Topology.Nodes), 1)
+				gomega.Expect(containerMemory.Topology.Nodes).To(gomega.HaveLen(1))
 				gomega.Expect(containerMemory.Topology.Nodes[0]).NotTo(gomega.BeNil())
 
 				numaNodeID := int(containerMemory.Topology.Nodes[0].ID)
 				for _, numaStateMemory := range stateAllocatableMemory {
-					framework.ExpectEqual(len(numaStateMemory.NUMAAffinity), 1)
+					gomega.Expect(numaStateMemory.NUMAAffinity).To(gomega.HaveLen(1))
 					if numaNodeID != numaStateMemory.NUMAAffinity[0] {
 						continue
 					}
@@ -437,16 +438,16 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				}
 			})
 
-			ginkgo.It("should succeed to start the pod", func() {
+			ginkgo.It("should succeed to start the pod", func(ctx context.Context) {
 				ginkgo.By("Running the test pod")
-				testPod = f.PodClient().CreateSync(testPod)
+				testPod = e2epod.NewPodClient(f).CreateSync(ctx, testPod)
 
 				// it no taste to verify NUMA pinning when the node has only one NUMA node
 				if !*isMultiNUMASupported {
 					return
 				}
 
-				verifyMemoryPinning(testPod, []int{0})
+				verifyMemoryPinning(ctx, testPod, []int{0})
 			})
 		})
 
@@ -462,16 +463,16 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				}
 			})
 
-			ginkgo.It("should succeed to start the pod", func() {
+			ginkgo.It("should succeed to start the pod", func(ctx context.Context) {
 				ginkgo.By("Running the test pod")
-				testPod = f.PodClient().CreateSync(testPod)
+				testPod = e2epod.NewPodClient(f).CreateSync(ctx, testPod)
 
 				// it no taste to verify NUMA pinning when the node has only one NUMA node
 				if !*isMultiNUMASupported {
 					return
 				}
 
-				verifyMemoryPinning(testPod, []int{0})
+				verifyMemoryPinning(ctx, testPod, []int{0})
 			})
 		})
 
@@ -493,29 +494,29 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				testPod2 = makeMemoryManagerPod("memory-manager-static", initCtnParams, ctnParams)
 			})
 
-			ginkgo.It("should succeed to start all pods", func() {
+			ginkgo.It("should succeed to start all pods", func(ctx context.Context) {
 				ginkgo.By("Running the test pod and the test pod 2")
-				testPod = f.PodClient().CreateSync(testPod)
+				testPod = e2epod.NewPodClient(f).CreateSync(ctx, testPod)
 
 				ginkgo.By("Running the test pod 2")
-				testPod2 = f.PodClient().CreateSync(testPod2)
+				testPod2 = e2epod.NewPodClient(f).CreateSync(ctx, testPod2)
 
 				// it no taste to verify NUMA pinning when the node has only one NUMA node
 				if !*isMultiNUMASupported {
 					return
 				}
 
-				verifyMemoryPinning(testPod, []int{0})
-				verifyMemoryPinning(testPod2, []int{0})
+				verifyMemoryPinning(ctx, testPod, []int{0})
+				verifyMemoryPinning(ctx, testPod2, []int{0})
 			})
 
 			// TODO: move the test to pod resource API test suite, see - https://github.com/kubernetes/kubernetes/issues/101945
-			ginkgo.It("should report memory data for each guaranteed pod and container during request to pod resources List", func() {
+			ginkgo.It("should report memory data for each guaranteed pod and container during request to pod resources List", func(ctx context.Context) {
 				ginkgo.By("Running the test pod and the test pod 2")
-				testPod = f.PodClient().CreateSync(testPod)
+				testPod = e2epod.NewPodClient(f).CreateSync(ctx, testPod)
 
 				ginkgo.By("Running the test pod 2")
-				testPod2 = f.PodClient().CreateSync(testPod2)
+				testPod2 = e2epod.NewPodClient(f).CreateSync(ctx, testPod2)
 
 				endpoint, err := util.LocalEndpoint(defaultPodResourcesPath, podresources.Socket)
 				framework.ExpectNoError(err)
@@ -524,7 +525,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				framework.ExpectNoError(err)
 				defer conn.Close()
 
-				resp, err := cli.List(context.TODO(), &kubeletpodresourcesv1.ListPodResourcesRequest{})
+				resp, err := cli.List(ctx, &kubeletpodresourcesv1.ListPodResourcesRequest{})
 				framework.ExpectNoError(err)
 
 				for _, pod := range []*v1.Pod{testPod, testPod2} {
@@ -551,10 +552,10 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				}
 			})
 
-			ginkgo.JustAfterEach(func() {
+			ginkgo.JustAfterEach(func(ctx context.Context) {
 				// delete the test pod 2
 				if testPod2.Name != "" {
-					f.PodClient().DeleteSync(testPod2.Name, metav1.DeleteOptions{}, 2*time.Minute)
+					e2epod.NewPodClient(f).DeleteSync(ctx, testPod2.Name, metav1.DeleteOptions{}, 2*time.Minute)
 				}
 			})
 		})
@@ -580,7 +581,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				}
 			})
 
-			ginkgo.JustBeforeEach(func() {
+			ginkgo.JustBeforeEach(func(ctx context.Context) {
 				stateData, err := getMemoryManagerState()
 				framework.ExpectNoError(err)
 
@@ -597,18 +598,18 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 					}
 					workloadPod := makeMemoryManagerPod(workloadCtnAttrs[0].ctnName, initCtnParams, workloadCtnAttrs)
 
-					workloadPod = f.PodClient().CreateSync(workloadPod)
+					workloadPod = e2epod.NewPodClient(f).CreateSync(ctx, workloadPod)
 					workloadPods = append(workloadPods, workloadPod)
 				}
 			})
 
-			ginkgo.It("should be rejected", func() {
+			ginkgo.It("should be rejected", func(ctx context.Context) {
 				ginkgo.By("Creating the pod")
-				testPod = f.PodClient().Create(testPod)
+				testPod = e2epod.NewPodClient(f).Create(ctx, testPod)
 
 				ginkgo.By("Checking that pod failed to start because of admission error")
-				gomega.Eventually(func() bool {
-					tmpPod, err := f.PodClient().Get(context.TODO(), testPod.Name, metav1.GetOptions{})
+				gomega.Eventually(ctx, func() bool {
+					tmpPod, err := e2epod.NewPodClient(f).Get(ctx, testPod.Name, metav1.GetOptions{})
 					framework.ExpectNoError(err)
 
 					if tmpPod.Status.Phase != v1.PodFailed {
@@ -619,21 +620,21 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 						return false
 					}
 
-					if !strings.Contains(tmpPod.Status.Message, "Pod Allocate failed due to [memorymanager]") {
+					if !strings.Contains(tmpPod.Status.Message, "Allocate failed due to [memorymanager]") {
 						return false
 					}
 
 					return true
 				}, time.Minute, 5*time.Second).Should(
-					gomega.Equal(true),
+					gomega.BeTrue(),
 					"the pod succeeded to start, when it should fail with the admission error",
 				)
 			})
 
-			ginkgo.JustAfterEach(func() {
+			ginkgo.JustAfterEach(func(ctx context.Context) {
 				for _, workloadPod := range workloadPods {
 					if workloadPod.Name != "" {
-						f.PodClient().DeleteSync(workloadPod.Name, metav1.DeleteOptions{}, 2*time.Minute)
+						e2epod.NewPodClient(f).DeleteSync(ctx, workloadPod.Name, metav1.DeleteOptions{}, 2*time.Minute)
 					}
 				}
 			})
@@ -641,9 +642,9 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 	})
 
 	ginkgo.Context("with none policy", func() {
-		tempSetCurrentKubeletConfig(f, func(initialConfig *kubeletconfig.KubeletConfiguration) {
+		tempSetCurrentKubeletConfig(f, func(ctx context.Context, initialConfig *kubeletconfig.KubeletConfiguration) {
 			kubeParams := *defaultKubeParams
-			kubeParams.memoryManagerPolicy = nonePolicy
+			kubeParams.policy = nonePolicy
 			updateKubeletConfigWithMemoryManagerParams(initialConfig, &kubeParams)
 		})
 
@@ -661,7 +662,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 			})
 
 			// TODO: move the test to pod resource API test suite, see - https://github.com/kubernetes/kubernetes/issues/101945
-			ginkgo.It("should not report any memory data during request to pod resources GetAllocatableResources", func() {
+			ginkgo.It("should not report any memory data during request to pod resources GetAllocatableResources", func(ctx context.Context) {
 				endpoint, err := util.LocalEndpoint(defaultPodResourcesPath, podresources.Socket)
 				framework.ExpectNoError(err)
 
@@ -669,15 +670,15 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				framework.ExpectNoError(err)
 				defer conn.Close()
 
-				resp, err := cli.GetAllocatableResources(context.TODO(), &kubeletpodresourcesv1.AllocatableResourcesRequest{})
+				resp, err := cli.GetAllocatableResources(ctx, &kubeletpodresourcesv1.AllocatableResourcesRequest{})
 				framework.ExpectNoError(err)
 
 				gomega.Expect(resp.Memory).To(gomega.BeEmpty())
 			})
 
 			// TODO: move the test to pod resource API test suite, see - https://github.com/kubernetes/kubernetes/issues/101945
-			ginkgo.It("should not report any memory data during request to pod resources List", func() {
-				testPod = f.PodClient().CreateSync(testPod)
+			ginkgo.It("should not report any memory data during request to pod resources List", func(ctx context.Context) {
+				testPod = e2epod.NewPodClient(f).CreateSync(ctx, testPod)
 
 				endpoint, err := util.LocalEndpoint(defaultPodResourcesPath, podresources.Socket)
 				framework.ExpectNoError(err)
@@ -686,7 +687,7 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				framework.ExpectNoError(err)
 				defer conn.Close()
 
-				resp, err := cli.List(context.TODO(), &kubeletpodresourcesv1.ListPodResourcesRequest{})
+				resp, err := cli.List(ctx, &kubeletpodresourcesv1.ListPodResourcesRequest{})
 				framework.ExpectNoError(err)
 
 				for _, podResource := range resp.PodResources {
@@ -700,15 +701,15 @@ var _ = SIGDescribe("Memory Manager [Disruptive] [Serial] [Feature:MemoryManager
 				}
 			})
 
-			ginkgo.It("should succeed to start the pod", func() {
-				testPod = f.PodClient().CreateSync(testPod)
+			ginkgo.It("should succeed to start the pod", func(ctx context.Context) {
+				testPod = e2epod.NewPodClient(f).CreateSync(ctx, testPod)
 
 				// it no taste to verify NUMA pinning when the node has only one NUMA node
 				if !*isMultiNUMASupported {
 					return
 				}
 
-				verifyMemoryPinning(testPod, allNUMANodes)
+				verifyMemoryPinning(ctx, testPod, allNUMANodes)
 			})
 		})
 	})

@@ -24,13 +24,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/kubectl/pkg/cmd/set"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/scheme"
-	"k8s.io/kubectl/pkg/util"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -49,7 +50,7 @@ type PauseOptions struct {
 	LabelSelector    string
 
 	resource.FilenameOptions
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 
 	fieldManager string
 }
@@ -70,7 +71,7 @@ var (
 )
 
 // NewCmdRolloutPause returns a Command instance for 'rollout pause' sub command
-func NewCmdRolloutPause(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdRolloutPause(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := &PauseOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("paused").WithTypeSetter(scheme.Scheme),
 		IOStreams:  streams,
@@ -84,7 +85,7 @@ func NewCmdRolloutPause(f cmdutil.Factory, streams genericclioptions.IOStreams) 
 		Short:                 i18n.T("Mark the provided resource as paused"),
 		Long:                  pauseLong,
 		Example:               pauseExample,
-		ValidArgsFunction:     util.SpecifiedResourceTypeAndNameCompletionFunc(f, validArgs),
+		ValidArgsFunction:     completion.SpecifiedResourceTypeAndNameCompletionFunc(f, validArgs),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())

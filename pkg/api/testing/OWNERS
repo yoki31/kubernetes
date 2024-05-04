@@ -2,16 +2,13 @@
 
 reviewers:
   - thockin
-  - lavalamp
   - smarterclayton
   - wojtek-t
   - deads2k
   - yujuhong
-  - brendandburns
   - derekwaynecarr
   - caesarxuchao
   - mikedanese
-  - pmorie
   - dchen1107
   - saad-ali
   - justinsb
@@ -19,4 +16,3 @@ reviewers:
   - soltysh
   - jsafrane
   - rata
-  - sdminonne

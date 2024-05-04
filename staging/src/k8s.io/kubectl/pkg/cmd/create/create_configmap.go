@@ -19,9 +19,8 @@ package create
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -32,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -96,15 +95,15 @@ type ConfigMapOptions struct {
 	Namespace        string
 	EnforceNamespace bool
 
-	Client         corev1client.CoreV1Interface
-	DryRunStrategy cmdutil.DryRunStrategy
-	DryRunVerifier *resource.DryRunVerifier
+	Client              corev1client.CoreV1Interface
+	DryRunStrategy      cmdutil.DryRunStrategy
+	ValidationDirective string
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 // NewConfigMapOptions creates a new *ConfigMapOptions with default value
-func NewConfigMapOptions(ioStreams genericclioptions.IOStreams) *ConfigMapOptions {
+func NewConfigMapOptions(ioStreams genericiooptions.IOStreams) *ConfigMapOptions {
 	return &ConfigMapOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
 		IOStreams:  ioStreams,
@@ -112,7 +111,7 @@ func NewConfigMapOptions(ioStreams genericclioptions.IOStreams) *ConfigMapOption
 }
 
 // NewCmdCreateConfigMap creates the `create configmap` Cobra command
-func NewCmdCreateConfigMap(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdCreateConfigMap(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewConfigMapOptions(ioStreams)
 
 	cmd := &cobra.Command{
@@ -136,7 +135,7 @@ func NewCmdCreateConfigMap(f cmdutil.Factory, ioStreams genericclioptions.IOStre
 
 	cmd.Flags().StringSliceVar(&o.FileSources, "from-file", o.FileSources, "Key file can be specified using its file path, in which case file basename will be used as configmap key, or optionally with a key and file path, in which case the given key will be used.  Specifying a directory will iterate each named file in the directory whose basename is a valid configmap key.")
 	cmd.Flags().StringArrayVar(&o.LiteralSources, "from-literal", o.LiteralSources, "Specify a key and literal value to insert in configmap (i.e. mykey=somevalue)")
-	cmd.Flags().StringSliceVar(&o.EnvFileSources, "from-env-file", o.EnvFileSources, "Specify the path to a file to read lines of key=val pairs to create a configmap (i.e. a Docker .env file).")
+	cmd.Flags().StringSliceVar(&o.EnvFileSources, "from-env-file", o.EnvFileSources, "Specify the path to a file to read lines of key=val pairs to create a configmap.")
 	cmd.Flags().BoolVar(&o.AppendHash, "append-hash", o.AppendHash, "Append a hash of the configmap to its name.")
 
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.FieldManager, "kubectl-create")
@@ -169,18 +168,6 @@ func (o *ConfigMapOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args 
 		return err
 	}
 
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-
-	discoveryClient, err := f.ToDiscoveryClient()
-	if err != nil {
-		return err
-	}
-
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, discoveryClient)
-
 	o.Namespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return err
@@ -193,6 +180,11 @@ func (o *ConfigMapOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args 
 	}
 	o.PrintObj = func(obj runtime.Object) error {
 		return printer.PrintObj(obj, o.Out)
+	}
+
+	o.ValidationDirective, err = cmdutil.GetValidationDirective(cmd)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -223,10 +215,8 @@ func (o *ConfigMapOptions) Run() error {
 		if o.FieldManager != "" {
 			createOptions.FieldManager = o.FieldManager
 		}
+		createOptions.FieldValidation = o.ValidationDirective
 		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(configMap.GroupVersionKind()); err != nil {
-				return err
-			}
 			createOptions.DryRun = []string{metav1.DryRunAll}
 		}
 		configMap, err = o.Client.ConfigMaps(o.Namespace).Create(context.TODO(), configMap, createOptions)
@@ -325,13 +315,13 @@ func handleConfigMapFromFileSources(configMap *corev1.ConfigMap, fileSources []s
 			if strings.Contains(fileSource, "=") {
 				return fmt.Errorf("cannot give a key name for a directory path")
 			}
-			fileList, err := ioutil.ReadDir(filePath)
+			fileList, err := os.ReadDir(filePath)
 			if err != nil {
 				return fmt.Errorf("error listing files in %s: %v", filePath, err)
 			}
 			for _, item := range fileList {
-				itemPath := path.Join(filePath, item.Name())
-				if item.Mode().IsRegular() {
+				itemPath := filepath.Join(filePath, item.Name())
+				if item.Type().IsRegular() {
 					keyName = item.Name()
 					err = addKeyFromFileToConfigMap(configMap, keyName, itemPath)
 					if err != nil {
@@ -379,7 +369,7 @@ func handleConfigMapFromEnvFileSources(configMap *corev1.ConfigMap, envFileSourc
 // addKeyFromFileToConfigMap adds a key with the given name to a ConfigMap, populating
 // the value with the content of the given file path, or returns an error.
 func addKeyFromFileToConfigMap(configMap *corev1.ConfigMap, keyName, filePath string) error {
-	data, err := ioutil.ReadFile(filePath)
+	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return err
 	}

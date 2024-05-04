@@ -18,31 +18,31 @@ package auth
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"testing"
 	"time"
 
+	utiltesting "k8s.io/client-go/util/testing"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/apiserver/pkg/authorization/authorizerfactory"
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/controller-manager/pkg/clientbuilder"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
-	"k8s.io/kubernetes/pkg/controlplane"
 	kubeoptions "k8s.io/kubernetes/pkg/kubeapiserver/options"
 	"k8s.io/kubernetes/test/integration/framework"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 func TestDynamicClientBuilder(t *testing.T) {
-	tmpfile, err := ioutil.TempFile("/tmp", "key")
+	tmpfile, err := os.CreateTemp("/tmp", "key")
 	if err != nil {
 		t.Fatalf("create temp file failed: %v", err)
 	}
-	defer os.RemoveAll(tmpfile.Name())
+	defer utiltesting.CloseAndRemove(t, tmpfile)
 
-	if err = ioutil.WriteFile(tmpfile.Name(), []byte(ecdsaPrivateKey), 0666); err != nil {
+	if err = os.WriteFile(tmpfile.Name(), []byte(ecdsaPrivateKey), 0666); err != nil {
 		t.Fatalf("write file %s failed: %v", tmpfile.Name(), err)
 	}
 
@@ -54,10 +54,8 @@ func TestDynamicClientBuilder(t *testing.T) {
 		t.Fatalf("parse duration failed: %v", err)
 	}
 
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-
-	baseClient, baseConfig := framework.StartTestServer(t, stopCh, framework.TestServerSetup{
+	tCtx := ktesting.Init(t)
+	baseClient, baseConfig, tearDownFn := framework.StartTestServer(tCtx, t, framework.TestServerSetup{
 		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
 			opts.ServiceAccountSigningKeyFile = tmpfile.Name()
 			opts.ServiceAccountTokenMaxExpiration = maxExpirationDuration
@@ -71,11 +69,10 @@ func TestDynamicClientBuilder(t *testing.T) {
 			}
 			opts.Authentication.ServiceAccounts.Issuers = []string{iss}
 			opts.Authentication.ServiceAccounts.KeyFiles = []string{tmpfile.Name()}
-		},
-		ModifyServerConfig: func(config *controlplane.Config) {
-			config.GenericConfig.Authorization.Authorizer = authorizerfactory.NewAlwaysAllowAuthorizer()
+			opts.Authorization.Modes = []string{"AlwaysAllow"}
 		},
 	})
+	defer tearDownFn()
 
 	// We want to test if the token rotation works fine here.
 	// To minimize the time this test would consume, we use the minimial token expiration.
@@ -102,7 +99,7 @@ func TestDynamicClientBuilder(t *testing.T) {
 
 	// We want to trigger token rotation here by deleting service account
 	// the dynamic client was using.
-	if err = dymClient.CoreV1().ServiceAccounts(ns).Delete(context.TODO(), saName, metav1.DeleteOptions{}); err != nil {
+	if err = dymClient.CoreV1().ServiceAccounts(ns).Delete(tCtx, saName, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete service account %s failed: %v", saName, err)
 	}
 	time.Sleep(time.Second * 10)

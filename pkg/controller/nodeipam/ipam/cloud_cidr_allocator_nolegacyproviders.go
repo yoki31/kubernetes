@@ -20,6 +20,7 @@ limitations under the License.
 package ipam
 
 import (
+	"context"
 	"errors"
 
 	informers "k8s.io/client-go/informers/core/v1"
@@ -28,6 +29,6 @@ import (
 )
 
 // NewCloudCIDRAllocator creates a new cloud CIDR allocator.
-func NewCloudCIDRAllocator(client clientset.Interface, cloud cloudprovider.Interface, nodeInformer informers.NodeInformer) (CIDRAllocator, error) {
+func NewCloudCIDRAllocator(ctx context.Context, client clientset.Interface, cloud cloudprovider.Interface, nodeInformer informers.NodeInformer) (CIDRAllocator, error) {
 	return nil, errors.New("legacy cloud provider support not built")
 }

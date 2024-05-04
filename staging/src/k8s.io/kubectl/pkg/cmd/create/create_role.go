@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	clientgorbacv1 "k8s.io/client-go/kubernetes/typed/rbac/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -51,7 +51,7 @@ var (
 		kubectl create role pod-reader --verb=get --resource=pods --resource-name=readablepod --resource-name=anotherpod
 
 		# Create a role named "foo" with API Group specified
-		kubectl create role foo --verb=get,list,watch --resource=rs.extensions
+		kubectl create role foo --verb=get,list,watch --resource=rs.apps
 
 		# Create a role named "foo" with SubResource specified
 		kubectl create role foo --verb=get,list,watch --resource=pods,pods/status`))
@@ -114,10 +114,12 @@ var (
 
 // AddSpecialVerb allows the addition of items to the `specialVerbs` map for non-k8s native resources.
 func AddSpecialVerb(verb string, gr schema.GroupResource) {
-	if resources, ok := specialVerbs[verb]; ok {
-		resources = append(resources, gr)
-		specialVerbs[verb] = resources
+	resources, ok := specialVerbs[verb]
+	if !ok {
+		resources = make([]schema.GroupResource, 1)
 	}
+	resources = append(resources, gr)
+	specialVerbs[verb] = resources
 }
 
 // ResourceOptions holds the related options for '--resource' option
@@ -136,22 +138,22 @@ type CreateRoleOptions struct {
 	Resources     []ResourceOptions
 	ResourceNames []string
 
-	DryRunStrategy   cmdutil.DryRunStrategy
-	DryRunVerifier   *resource.DryRunVerifier
-	OutputFormat     string
-	Namespace        string
-	EnforceNamespace bool
-	Client           clientgorbacv1.RbacV1Interface
-	Mapper           meta.RESTMapper
-	PrintObj         func(obj runtime.Object) error
-	FieldManager     string
-	CreateAnnotation bool
+	DryRunStrategy      cmdutil.DryRunStrategy
+	ValidationDirective string
+	OutputFormat        string
+	Namespace           string
+	EnforceNamespace    bool
+	Client              clientgorbacv1.RbacV1Interface
+	Mapper              meta.RESTMapper
+	PrintObj            func(obj runtime.Object) error
+	FieldManager        string
+	CreateAnnotation    bool
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 // NewCreateRoleOptions returns an initialized CreateRoleOptions instance
-func NewCreateRoleOptions(ioStreams genericclioptions.IOStreams) *CreateRoleOptions {
+func NewCreateRoleOptions(ioStreams genericiooptions.IOStreams) *CreateRoleOptions {
 	return &CreateRoleOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
 
@@ -160,7 +162,7 @@ func NewCreateRoleOptions(ioStreams genericclioptions.IOStreams) *CreateRoleOpti
 }
 
 // NewCmdCreateRole returnns an initialized Command instance for 'create role' sub command
-func NewCmdCreateRole(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdCreateRole(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewCreateRoleOptions(ioStreams)
 
 	cmd := &cobra.Command{
@@ -254,11 +256,6 @@ func (o *CreateRoleOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 	o.OutputFormat = cmdutil.GetFlagString(cmd, "output")
 	o.CreateAnnotation = cmdutil.GetFlagBool(cmd, cmdutil.ApplyAnnotationsFlag)
 
@@ -269,6 +266,11 @@ func (o *CreateRoleOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args
 	}
 	o.PrintObj = func(obj runtime.Object) error {
 		return printer.PrintObj(obj, o.Out)
+	}
+
+	o.ValidationDirective, err = cmdutil.GetValidationDirective(cmd)
+	if err != nil {
+		return err
 	}
 
 	o.Namespace, o.EnforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
@@ -374,10 +376,8 @@ func (o *CreateRoleOptions) RunCreateRole() error {
 		if o.FieldManager != "" {
 			createOptions.FieldManager = o.FieldManager
 		}
+		createOptions.FieldValidation = o.ValidationDirective
 		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(role.GroupVersionKind()); err != nil {
-				return err
-			}
 			createOptions.DryRun = []string{metav1.DryRunAll}
 		}
 		role, err = o.Client.Roles(o.Namespace).Create(context.TODO(), role, createOptions)

@@ -25,18 +25,18 @@ set -o pipefail
 KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 source "${KUBE_ROOT}/hack/lib/init.sh"
 
-# Explicitly opt into go modules, even though we're inside a GOPATH directory
-export GO111MODULE=on
-# Explicitly set GOFLAGS to ignore vendor, since GOFLAGS=-mod=vendor breaks dependency resolution while rebuilding vendor
-export GOFLAGS=-mod=mod
 # Detect problematic GOPROXY settings that prevent lookup of dependencies
 if [[ "${GOPROXY:-}" == "off" ]]; then
   kube::log::error "Cannot run with \$GOPROXY=off"
   exit 1
 fi
 
-kube::golang::verify_go_version
+kube::golang::setup_env
 kube::util::require-jq
+
+# Explicitly set GOFLAGS to ignore vendor, since GOFLAGS=-mod=vendor breaks dependency resolution while rebuilding vendor
+export GOWORK=off
+export GOFLAGS=-mod=mod
 
 dep="${1:-}"
 sha="${2:-}"
@@ -69,15 +69,6 @@ if [[ -z "${dep}" || -z "${replacement}" || -z "${sha}" ]]; then
   exit 1
 fi
 
-_tmp="${KUBE_ROOT}/_tmp"
-cleanup() {
-  rm -rf "${_tmp}"
-}
-trap "cleanup" EXIT SIGINT
-cleanup
-mkdir -p "${_tmp}"
-
-
 # Find the resolved version before trying to use it.
 echo "Running: go mod download ${replacement}@${sha}"
 if meta=$(go mod download -json "${replacement}@${sha}"); then
@@ -94,16 +85,15 @@ echo "Running: go mod edit -require ${dep}@${rev}"
 go mod edit -require "${dep}@${rev}"
 
 # Add the replace directive
-echo "Running: go mod edit -replace ${dep}=${replacement}@${rev}"
-go mod edit -replace "${dep}=${replacement}@${rev}"
+if [ "${replacement}" != "${dep}" ]; then
+  echo "Running: go mod edit -replace ${dep}=${replacement}@${rev}"
+  go mod edit -replace "${dep}=${replacement}@${rev}"
+fi
 
-# Propagate pinned version to staging repos that also have that dependency
+# Propagate pinned version to staging repos
 for repo in $(kube::util::list_staging_repos); do
   pushd "staging/src/k8s.io/${repo}" >/dev/null 2>&1
-    if go mod edit -json | jq -e -r ".Require[] | select(.Path == \"${dep}\")" > /dev/null 2>&1; then
-      go mod edit -require "${dep}@${rev}"
-      go mod edit -replace "${dep}=${replacement}@${rev}"
-    fi
+    go mod edit -require "${dep}@${rev}"
 
     # When replacing with a fork, always add a replace statement in all go.mod
     # files (not just the root of the staging repos!) because there might be

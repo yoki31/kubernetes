@@ -24,21 +24,24 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/kubernetes/test/e2e/feature"
 	"k8s.io/kubernetes/test/e2e/framework"
-	"k8s.io/kubernetes/test/e2e/framework/daemonset"
+	e2edaemonset "k8s.io/kubernetes/test/e2e/framework/daemonset"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eoutput "k8s.io/kubernetes/test/e2e/framework/pod/output"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
-	imageutils "k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 )
 
 const (
 	testSlowMultiplier = 60
 )
 
-var _ = SIGDescribe("[Feature:GPUDevicePlugin] Device Plugin", func() {
+var _ = sigDescribe(feature.GPUDevicePlugin, "Device Plugin", skipUnlessWindows(func() {
 	f := framework.NewDefaultFramework("device-plugin")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 
 	var cs clientset.Interface
 
@@ -47,7 +50,7 @@ var _ = SIGDescribe("[Feature:GPUDevicePlugin] Device Plugin", func() {
 		e2eskipper.SkipUnlessNodeOSDistroIs("windows")
 		cs = f.ClientSet
 	})
-	ginkgo.It("should be able to create a functioning device plugin for Windows", func() {
+	ginkgo.It("should be able to create a functioning device plugin for Windows", func(ctx context.Context) {
 		ginkgo.By("creating Windows device plugin daemonset")
 		dsName := "directx-device-plugin"
 		daemonsetNameLabel := "daemonset-name"
@@ -73,7 +76,7 @@ var _ = SIGDescribe("[Feature:GPUDevicePlugin] Device Plugin", func() {
 				MountPath: mountPath,
 			},
 		}
-		ds := daemonset.NewDaemonSet(dsName, image, labels, volumes, mounts, nil)
+		ds := e2edaemonset.NewDaemonSet(dsName, image, labels, volumes, mounts, nil)
 		ds.Spec.Template.Spec.PriorityClassName = "system-node-critical"
 		ds.Spec.Template.Spec.Tolerations = []v1.Toleration{
 			{
@@ -92,19 +95,23 @@ var _ = SIGDescribe("[Feature:GPUDevicePlugin] Device Plugin", func() {
 		}
 
 		sysNs := "kube-system"
-		_, err := cs.AppsV1().DaemonSets(sysNs).Create(context.TODO(), ds, metav1.CreateOptions{})
+		_, err := cs.AppsV1().DaemonSets(sysNs).Create(ctx, ds, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 
+		// Windows device plugin tests require the *full* windows image (not nanoserver or servercore)
+		// because those images do not contain the necessary DirectX components.
+		fullWindowsContainerImage := "mcr.microsoft.com/windows:ltsc2019"
+
 		ginkgo.By("creating Windows testing Pod")
-		windowsPod := createTestPod(f, imageutils.GetE2EImage(imageutils.WindowsServer), windowsOS)
+		windowsPod := createTestPod(f, fullWindowsContainerImage, windowsOS)
 		windowsPod.Spec.Containers[0].Args = []string{"powershell.exe", "Start-Sleep", "3600"}
 		windowsPod.Spec.Containers[0].Resources.Limits = v1.ResourceList{
 			"microsoft.com/directx": resource.MustParse("1"),
 		}
-		windowsPod, err = cs.CoreV1().Pods(f.Namespace.Name).Create(context.TODO(), windowsPod, metav1.CreateOptions{})
+		windowsPod, err = cs.CoreV1().Pods(f.Namespace.Name).Create(ctx, windowsPod, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 		ginkgo.By("Waiting for the pod Running")
-		err = e2epod.WaitTimeoutForPodRunningInNamespace(cs, windowsPod.Name, f.Namespace.Name, testSlowMultiplier*framework.PodStartTimeout)
+		err = e2epod.WaitTimeoutForPodRunningInNamespace(ctx, cs, windowsPod.Name, f.Namespace.Name, testSlowMultiplier*framework.PodStartTimeout)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("verifying device access in Windows testing Pod")
@@ -113,20 +120,20 @@ var _ = SIGDescribe("[Feature:GPUDevicePlugin] Device Plugin", func() {
 		//based on  the windows version running the test.
 		dxdiagDirectxVersion := "DirectX Version: DirectX 12"
 		defaultNs := f.Namespace.Name
-		_, dxdiagDirectxVersionErr := framework.LookForStringInPodExec(defaultNs, windowsPod.Name, dxdiagCommand, dxdiagDirectxVersion, time.Minute)
+		_, dxdiagDirectxVersionErr := e2eoutput.LookForStringInPodExec(defaultNs, windowsPod.Name, dxdiagCommand, dxdiagDirectxVersion, time.Minute)
 		framework.ExpectNoError(dxdiagDirectxVersionErr, "failed: didn't find directX version dxdiag output.")
 
 		dxdiagDdiVersion := "DDI Version: 12"
-		_, dxdiagDdiVersionErr := framework.LookForStringInPodExec(defaultNs, windowsPod.Name, dxdiagCommand, dxdiagDdiVersion, time.Minute)
+		_, dxdiagDdiVersionErr := e2eoutput.LookForStringInPodExec(defaultNs, windowsPod.Name, dxdiagCommand, dxdiagDdiVersion, time.Minute)
 		framework.ExpectNoError(dxdiagDdiVersionErr, "failed: didn't find DDI version in dxdiag output.")
 
 		dxdiagVendorID := "Vendor ID: 0x"
-		_, dxdiagVendorIDErr := framework.LookForStringInPodExec(defaultNs, windowsPod.Name, dxdiagCommand, dxdiagVendorID, time.Minute)
+		_, dxdiagVendorIDErr := e2eoutput.LookForStringInPodExec(defaultNs, windowsPod.Name, dxdiagCommand, dxdiagVendorID, time.Minute)
 		framework.ExpectNoError(dxdiagVendorIDErr, "failed: didn't find vendorID in dxdiag output.")
 
 		envVarCommand := []string{"cmd.exe", "/c", "set", "DIRECTX_GPU_Name"}
 		envVarDirectxGpuName := "DIRECTX_GPU_Name="
-		_, envVarDirectxGpuNameErr := framework.LookForStringInPodExec(defaultNs, windowsPod.Name, envVarCommand, envVarDirectxGpuName, time.Minute)
+		_, envVarDirectxGpuNameErr := e2eoutput.LookForStringInPodExec(defaultNs, windowsPod.Name, envVarCommand, envVarDirectxGpuName, time.Minute)
 		framework.ExpectNoError(envVarDirectxGpuNameErr, "failed: didn't find expected environment variable.")
 	})
-})
+}))

@@ -17,6 +17,7 @@ limitations under the License.
 package nodestatus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -26,28 +27,28 @@ import (
 	"time"
 
 	cadvisorapiv1 "github.com/google/cadvisor/info/v1"
+	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/uuid"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cloudprovider "k8s.io/cloud-provider"
 	fakecloud "k8s.io/cloud-provider/fake"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/component-base/version"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kubecontainertest "k8s.io/kubernetes/pkg/kubelet/container/testing"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/kubelet/util/sliceutils"
-	"k8s.io/kubernetes/pkg/volume"
-	volumetest "k8s.io/kubernetes/pkg/volume/testing"
 	netutils "k8s.io/utils/net"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -56,14 +57,25 @@ const (
 
 // TODO(mtaufen): below is ported from the old kubelet_node_status_test.go code, potentially add more test coverage for NodeAddress setter in future
 func TestNodeAddress(t *testing.T) {
+	type cloudProviderType int
+	const (
+		cloudProviderLegacy cloudProviderType = iota
+		cloudProviderExternal
+		cloudProviderNone
+	)
+	existingNodeAddress := v1.NodeAddress{Address: "10.1.1.2"}
 	cases := []struct {
-		name                  string
-		hostnameOverride      bool
-		nodeIP                net.IP
-		externalCloudProvider bool
-		nodeAddresses         []v1.NodeAddress
-		expectedAddresses     []v1.NodeAddress
-		shouldError           bool
+		name                           string
+		hostnameOverride               bool
+		nodeIP                         net.IP
+		secondaryNodeIP                net.IP
+		cloudProviderType              cloudProviderType
+		nodeAddresses                  []v1.NodeAddress
+		expectedAddresses              []v1.NodeAddress
+		existingAnnotations            map[string]string
+		expectedAnnotations            map[string]string
+		shouldError                    bool
+		shouldSetNodeAddressBeforeTest bool
 	}{
 		{
 			name:   "A single InternalIP",
@@ -211,12 +223,31 @@ func TestNodeAddress(t *testing.T) {
 			shouldError:      false,
 		},
 		{
-			name:                  "cloud provider is external",
-			nodeIP:                netutils.ParseIPSloppy("10.0.0.1"),
-			nodeAddresses:         []v1.NodeAddress{},
-			externalCloudProvider: true,
+			name:              "cloud provider is external and nodeIP specified",
+			nodeIP:            netutils.ParseIPSloppy("10.0.0.1"),
+			nodeAddresses:     []v1.NodeAddress{},
+			cloudProviderType: cloudProviderExternal,
 			expectedAddresses: []v1.NodeAddress{
 				{Type: v1.NodeInternalIP, Address: "10.0.0.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			shouldError: false,
+		},
+		{
+			name:              "cloud provider is external and nodeIP unspecified",
+			nodeIP:            netutils.ParseIPSloppy("::"),
+			nodeAddresses:     []v1.NodeAddress{},
+			cloudProviderType: cloudProviderExternal,
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			shouldError: false,
+		},
+		{
+			name:              "cloud provider is external and no nodeIP",
+			nodeAddresses:     []v1.NodeAddress{},
+			cloudProviderType: cloudProviderExternal,
+			expectedAddresses: []v1.NodeAddress{
 				{Type: v1.NodeHostName, Address: testKubeletHostname},
 			},
 			shouldError: false,
@@ -293,6 +324,20 @@ func TestNodeAddress(t *testing.T) {
 			},
 			hostnameOverride: true,
 			shouldError:      false,
+		},
+		{
+			name:   "Dual-stack cloud, with nodeIP, different IPv6 formats",
+			nodeIP: netutils.ParseIPSloppy("2600:1f14:1d4:d101::ba3d"),
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101:0:0:0:ba3d"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101:0:0:0:ba3d"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			shouldError: false,
 		},
 		{
 			name: "Dual-stack cloud, IPv4 first, no nodeIP",
@@ -382,19 +427,208 @@ func TestNodeAddress(t *testing.T) {
 			},
 			shouldError: false,
 		},
+		{
+			name:              "Legacy cloud provider gets nodeIP annotation",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType: cloudProviderLegacy,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1",
+			},
+			shouldError: false,
+		},
+		{
+			name:              "External cloud provider gets nodeIP annotation",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType: cloudProviderExternal,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1",
+			},
+			shouldError: false,
+		},
+		{
+			name:                           "External cloud provider, node address is already set",
+			nodeIP:                         netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType:              cloudProviderExternal,
+			nodeAddresses:                  []v1.NodeAddress{existingNodeAddress},
+			expectedAddresses:              []v1.NodeAddress{existingNodeAddress},
+			shouldError:                    true,
+			shouldSetNodeAddressBeforeTest: true,
+		},
+		{
+			name:              "No cloud provider does not get nodeIP annotation",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType: cloudProviderNone,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAnnotations: map[string]string{},
+			shouldError:         false,
+		},
+		{
+			name:              "Stale nodeIP annotation is removed when not using cloud provider",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType: cloudProviderNone,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			existingAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.3",
+			},
+			expectedAnnotations: map[string]string{},
+			shouldError:         false,
+		},
+		{
+			name:              "Stale nodeIP annotation is removed when using cloud provider but no --node-ip",
+			nodeIP:            nil,
+			cloudProviderType: cloudProviderLegacy,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			existingAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1",
+			},
+			expectedAnnotations: map[string]string{},
+			shouldError:         false,
+		},
+		{
+			name:              "Incorrect nodeIP annotation is fixed",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType: cloudProviderExternal,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			existingAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.3",
+			},
+			expectedAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1",
+			},
+			shouldError: false,
+		},
+		{
+			// We don't have to test "legacy cloud provider with dual-stack
+			// IPs" etc because we won't have gotten this far with an invalid
+			// config like that.
+			name:              "Dual-stack cloud, with dual-stack nodeIPs",
+			nodeIP:            netutils.ParseIPSloppy("2600:1f14:1d4:d101::ba3d"),
+			secondaryNodeIP:   netutils.ParseIPSloppy("10.1.1.2"),
+			cloudProviderType: cloudProviderExternal,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "10.1.1.2"},
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101::ba3d"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101::ba3d"},
+				{Type: v1.NodeInternalIP, Address: "10.1.1.2"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "2600:1f14:1d4:d101::ba3d,10.1.1.2",
+			},
+			shouldError: false,
+		},
+		{
+			name:              "Upgrade to cloud dual-stack nodeIPs",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			secondaryNodeIP:   netutils.ParseIPSloppy("2600:1f14:1d4:d101::ba3d"),
+			cloudProviderType: cloudProviderExternal,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101::ba3d"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101::ba3d"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			existingAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1",
+			},
+			expectedAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1,2600:1f14:1d4:d101::ba3d",
+			},
+			shouldError: false,
+		},
+		{
+			name:              "Downgrade from cloud dual-stack nodeIPs",
+			nodeIP:            netutils.ParseIPSloppy("10.1.1.1"),
+			cloudProviderType: cloudProviderExternal,
+			nodeAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeInternalIP, Address: "2600:1f14:1d4:d101::ba3d"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			expectedAddresses: []v1.NodeAddress{
+				{Type: v1.NodeInternalIP, Address: "10.1.1.1"},
+				{Type: v1.NodeHostName, Address: testKubeletHostname},
+			},
+			existingAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1,2600:1f14:1d4:d101::ba3d",
+			},
+			expectedAnnotations: map[string]string{
+				"alpha.kubernetes.io/provided-node-ip": "10.1.1.1",
+			},
+			shouldError: false,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
 			// testCase setup
 			existingNode := &v1.Node{
-				ObjectMeta: metav1.ObjectMeta{Name: testKubeletHostname, Annotations: make(map[string]string)},
-				Spec:       v1.NodeSpec{},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:        testKubeletHostname,
+					Annotations: testCase.existingAnnotations,
+				},
+				Spec: v1.NodeSpec{},
 				Status: v1.NodeStatus{
 					Addresses: []v1.NodeAddress{},
 				},
 			}
 
-			nodeIP := testCase.nodeIP
+			if testCase.shouldSetNodeAddressBeforeTest {
+				existingNode.Status.Addresses = append(existingNode.Status.Addresses, existingNodeAddress)
+			}
+
 			nodeIPValidator := func(nodeIP net.IP) error {
 				return nil
 			}
@@ -404,29 +638,31 @@ func TestNodeAddress(t *testing.T) {
 				return testCase.nodeAddresses, nil
 			}
 
-			// cloud provider is expected to be nil if external provider is set
+			// cloud provider is expected to be nil if external provider is set or there is no cloud provider
 			var cloud cloudprovider.Interface
-			if testCase.externalCloudProvider {
-				cloud = nil
-			} else {
+			if testCase.cloudProviderType == cloudProviderLegacy {
 				cloud = &fakecloud.Cloud{
 					Addresses: testCase.nodeAddresses,
 					Err:       nil,
 				}
+			}
 
+			nodeIPs := []net.IP{testCase.nodeIP}
+			if testCase.secondaryNodeIP != nil {
+				nodeIPs = append(nodeIPs, testCase.secondaryNodeIP)
 			}
 
 			// construct setter
-			setter := NodeAddress([]net.IP{nodeIP},
+			setter := NodeAddress(nodeIPs,
 				nodeIPValidator,
 				hostname,
 				testCase.hostnameOverride,
-				testCase.externalCloudProvider,
+				testCase.cloudProviderType == cloudProviderExternal,
 				cloud,
 				nodeAddressesFunc)
 
 			// call setter on existing node
-			err := setter(existingNode)
+			err := setter(ctx, existingNode)
 			if err != nil && !testCase.shouldError {
 				t.Fatalf("unexpected error: %v", err)
 			} else if err != nil && testCase.shouldError {
@@ -435,7 +671,11 @@ func TestNodeAddress(t *testing.T) {
 			}
 
 			assert.True(t, apiequality.Semantic.DeepEqual(testCase.expectedAddresses, existingNode.Status.Addresses),
-				"Diff: %s", diff.ObjectDiff(testCase.expectedAddresses, existingNode.Status.Addresses))
+				"Diff: %s", cmp.Diff(testCase.expectedAddresses, existingNode.Status.Addresses))
+			if testCase.expectedAnnotations != nil {
+				assert.True(t, apiequality.Semantic.DeepEqual(testCase.expectedAnnotations, existingNode.Annotations),
+					"Diff: %s", cmp.Diff(testCase.expectedAnnotations, existingNode.Annotations))
+			}
 		})
 	}
 }
@@ -446,6 +686,7 @@ func TestNodeAddress_NoCloudProvider(t *testing.T) {
 		name              string
 		nodeIPs           []net.IP
 		expectedAddresses []v1.NodeAddress
+		shouldError       bool
 	}{
 		{
 			name:    "Single --node-ip",
@@ -456,6 +697,11 @@ func TestNodeAddress_NoCloudProvider(t *testing.T) {
 			},
 		},
 		{
+			name:        "Invalid single --node-ip (using loopback)",
+			nodeIPs:     []net.IP{netutils.ParseIPSloppy("127.0.0.1")},
+			shouldError: true,
+		},
+		{
 			name:    "Dual --node-ips",
 			nodeIPs: []net.IP{netutils.ParseIPSloppy("10.1.1.1"), netutils.ParseIPSloppy("fd01::1234")},
 			expectedAddresses: []v1.NodeAddress{
@@ -464,9 +710,15 @@ func TestNodeAddress_NoCloudProvider(t *testing.T) {
 				{Type: v1.NodeHostName, Address: testKubeletHostname},
 			},
 		},
+		{
+			name:        "Dual --node-ips but with invalid secondary IP (using multicast IP)",
+			nodeIPs:     []net.IP{netutils.ParseIPSloppy("10.1.1.1"), netutils.ParseIPSloppy("224.0.0.0")},
+			shouldError: true,
+		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			ctx := context.Background()
 			// testCase setup
 			existingNode := &v1.Node{
 				ObjectMeta: metav1.ObjectMeta{Name: testKubeletHostname, Annotations: make(map[string]string)},
@@ -477,6 +729,11 @@ func TestNodeAddress_NoCloudProvider(t *testing.T) {
 			}
 
 			nodeIPValidator := func(nodeIP net.IP) error {
+				if nodeIP.IsLoopback() {
+					return fmt.Errorf("nodeIP can't be loopback address")
+				} else if nodeIP.IsMulticast() {
+					return fmt.Errorf("nodeIP can't be a multicast address")
+				}
 				return nil
 			}
 			nodeAddressesFunc := func() ([]v1.NodeAddress, error) {
@@ -493,13 +750,16 @@ func TestNodeAddress_NoCloudProvider(t *testing.T) {
 				nodeAddressesFunc)
 
 			// call setter on existing node
-			err := setter(existingNode)
-			if err != nil {
+			err := setter(ctx, existingNode)
+			if testCase.shouldError && err == nil {
+				t.Fatal("expected error but no error returned")
+			}
+			if err != nil && !testCase.shouldError {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
 			assert.True(t, apiequality.Semantic.DeepEqual(testCase.expectedAddresses, existingNode.Status.Addresses),
-				"Diff: %s", diff.ObjectDiff(testCase.expectedAddresses, existingNode.Status.Addresses))
+				"Diff: %s", cmp.Diff(testCase.expectedAddresses, existingNode.Status.Addresses))
 		})
 	}
 }
@@ -514,17 +774,18 @@ func TestMachineInfo(t *testing.T) {
 	}
 
 	cases := []struct {
-		desc                         string
-		node                         *v1.Node
-		maxPods                      int
-		podsPerCore                  int
-		machineInfo                  *cadvisorapiv1.MachineInfo
-		machineInfoError             error
-		capacity                     v1.ResourceList
-		devicePluginResourceCapacity dprc
-		nodeAllocatableReservation   v1.ResourceList
-		expectNode                   *v1.Node
-		expectEvents                 []testEvent
+		desc                                 string
+		node                                 *v1.Node
+		maxPods                              int
+		podsPerCore                          int
+		machineInfo                          *cadvisorapiv1.MachineInfo
+		machineInfoError                     error
+		capacity                             v1.ResourceList
+		devicePluginResourceCapacity         dprc
+		nodeAllocatableReservation           v1.ResourceList
+		expectNode                           *v1.Node
+		expectEvents                         []testEvent
+		disableLocalStorageCapacityIsolation bool
 	}{
 		{
 			desc:    "machine identifiers, basic capacity and allocatable",
@@ -699,6 +960,37 @@ func TestMachineInfo(t *testing.T) {
 			},
 		},
 		{
+			desc: "hugepages reservation greater than node memory capacity should result in memory capacity set to 0",
+			node: &v1.Node{
+				Status: v1.NodeStatus{
+					Capacity: v1.ResourceList{
+						v1.ResourceHugePagesPrefix + "test": *resource.NewQuantity(1025, resource.BinarySI),
+					},
+				},
+			},
+			maxPods: 110,
+			machineInfo: &cadvisorapiv1.MachineInfo{
+				NumCores:       2,
+				MemoryCapacity: 1024,
+			},
+			expectNode: &v1.Node{
+				Status: v1.NodeStatus{
+					Capacity: v1.ResourceList{
+						v1.ResourceCPU:                      *resource.NewMilliQuantity(2000, resource.DecimalSI),
+						v1.ResourceMemory:                   *resource.NewQuantity(1024, resource.BinarySI),
+						v1.ResourcePods:                     *resource.NewQuantity(110, resource.DecimalSI),
+						v1.ResourceHugePagesPrefix + "test": *resource.NewQuantity(1025, resource.BinarySI),
+					},
+					Allocatable: v1.ResourceList{
+						v1.ResourceCPU:                      *resource.NewMilliQuantity(2000, resource.DecimalSI),
+						v1.ResourceMemory:                   *resource.NewQuantity(0, resource.BinarySI),
+						v1.ResourcePods:                     *resource.NewQuantity(110, resource.DecimalSI),
+						v1.ResourceHugePagesPrefix + "test": *resource.NewQuantity(1025, resource.BinarySI),
+					},
+				},
+			},
+		},
+		{
 			desc:    "ephemeral storage is reflected in capacity and allocatable",
 			node:    &v1.Node{},
 			maxPods: 110,
@@ -725,6 +1017,35 @@ func TestMachineInfo(t *testing.T) {
 					},
 				},
 			},
+		},
+		{
+			desc:    "ephemeral storage is not reflected in capacity and allocatable because localStorageCapacityIsolation is disabled",
+			node:    &v1.Node{},
+			maxPods: 110,
+			machineInfo: &cadvisorapiv1.MachineInfo{
+				NumCores:       2,
+				MemoryCapacity: 1024,
+			},
+			capacity: v1.ResourceList{
+				v1.ResourceEphemeralStorage: *resource.NewQuantity(5000, resource.BinarySI),
+			},
+			expectNode: &v1.Node{
+				Status: v1.NodeStatus{
+					Capacity: v1.ResourceList{
+						v1.ResourceCPU:              *resource.NewMilliQuantity(2000, resource.DecimalSI),
+						v1.ResourceMemory:           *resource.NewQuantity(1024, resource.BinarySI),
+						v1.ResourcePods:             *resource.NewQuantity(110, resource.DecimalSI),
+						v1.ResourceEphemeralStorage: *resource.NewQuantity(5000, resource.BinarySI),
+					},
+					Allocatable: v1.ResourceList{
+						v1.ResourceCPU:              *resource.NewMilliQuantity(2000, resource.DecimalSI),
+						v1.ResourceMemory:           *resource.NewQuantity(1024, resource.BinarySI),
+						v1.ResourcePods:             *resource.NewQuantity(110, resource.DecimalSI),
+						v1.ResourceEphemeralStorage: *resource.NewQuantity(5000, resource.BinarySI),
+					},
+				},
+			},
+			disableLocalStorageCapacityIsolation: true,
 		},
 		{
 			desc:    "device plugin resources are reflected in capacity and allocatable",
@@ -888,10 +1209,11 @@ func TestMachineInfo(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			machineInfoFunc := func() (*cadvisorapiv1.MachineInfo, error) {
 				return tc.machineInfo, tc.machineInfoError
 			}
-			capacityFunc := func() v1.ResourceList {
+			capacityFunc := func(localStorageCapacityIsolation bool) v1.ResourceList {
 				return tc.capacity
 			}
 			devicePluginResourceCapacityFunc := func() (v1.ResourceList, v1.ResourceList, []string) {
@@ -912,14 +1234,14 @@ func TestMachineInfo(t *testing.T) {
 			}
 			// construct setter
 			setter := MachineInfo(nodeName, tc.maxPods, tc.podsPerCore, machineInfoFunc, capacityFunc,
-				devicePluginResourceCapacityFunc, nodeAllocatableReservationFunc, recordEventFunc)
+				devicePluginResourceCapacityFunc, nodeAllocatableReservationFunc, recordEventFunc, tc.disableLocalStorageCapacityIsolation)
 			// call setter on node
-			if err := setter(tc.node); err != nil {
+			if err := setter(ctx, tc.node); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			// check expected node
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectNode, tc.node),
-				"Diff: %s", diff.ObjectDiff(tc.expectNode, tc.node))
+				"Diff: %s", cmp.Diff(tc.expectNode, tc.node))
 			// check expected events
 			require.Equal(t, len(tc.expectEvents), len(events))
 			for i := range tc.expectEvents {
@@ -941,6 +1263,7 @@ func TestVersionInfo(t *testing.T) {
 		runtimeVersionError error
 		expectNode          *v1.Node
 		expectError         error
+		kubeProxyVersion    bool
 	}{
 		{
 			desc: "versions set in node info",
@@ -964,6 +1287,7 @@ func TestVersionInfo(t *testing.T) {
 					},
 				},
 			},
+			kubeProxyVersion: true,
 		},
 		{
 			desc:             "error getting version info",
@@ -971,6 +1295,7 @@ func TestVersionInfo(t *testing.T) {
 			versionInfoError: fmt.Errorf("foo"),
 			expectNode:       &v1.Node{},
 			expectError:      fmt.Errorf("error getting version info: foo"),
+			kubeProxyVersion: true,
 		},
 		{
 			desc:                "error getting runtime version results in Unknown runtime",
@@ -987,28 +1312,88 @@ func TestVersionInfo(t *testing.T) {
 					},
 				},
 			},
+			kubeProxyVersion: true,
+		},
+		{
+			desc: "DisableNodeKubeProxyVersion FeatureGate enable, versions set in node info",
+			node: &v1.Node{},
+			versionInfo: &cadvisorapiv1.VersionInfo{
+				KernelVersion:      "KernelVersion",
+				ContainerOsVersion: "ContainerOSVersion",
+			},
+			runtimeType: "RuntimeType",
+			runtimeVersion: &kubecontainertest.FakeVersion{
+				Version: "RuntimeVersion",
+			},
+			expectNode: &v1.Node{
+				Status: v1.NodeStatus{
+					NodeInfo: v1.NodeSystemInfo{
+						KernelVersion:           "KernelVersion",
+						OSImage:                 "ContainerOSVersion",
+						ContainerRuntimeVersion: "RuntimeType://RuntimeVersion",
+						KubeletVersion:          version.Get().String(),
+					},
+				},
+			},
+			kubeProxyVersion: false,
+		},
+		{
+			desc: "DisableNodeKubeProxyVersion FeatureGate enable, KubeProxyVersion will be cleared if it is set.",
+			node: &v1.Node{
+				Status: v1.NodeStatus{
+					NodeInfo: v1.NodeSystemInfo{
+						KernelVersion:           "KernelVersion",
+						OSImage:                 "ContainerOSVersion",
+						ContainerRuntimeVersion: "RuntimeType://RuntimeVersion",
+						KubeletVersion:          version.Get().String(),
+						KubeProxyVersion:        version.Get().String(),
+					},
+				},
+			},
+			versionInfo: &cadvisorapiv1.VersionInfo{
+				KernelVersion:      "KernelVersion",
+				ContainerOsVersion: "ContainerOSVersion",
+			},
+			runtimeType: "RuntimeType",
+			runtimeVersion: &kubecontainertest.FakeVersion{
+				Version: "RuntimeVersion",
+			},
+			expectNode: &v1.Node{
+				Status: v1.NodeStatus{
+					NodeInfo: v1.NodeSystemInfo{
+						KernelVersion:           "KernelVersion",
+						OSImage:                 "ContainerOSVersion",
+						ContainerRuntimeVersion: "RuntimeType://RuntimeVersion",
+						KubeletVersion:          version.Get().String(),
+					},
+				},
+			},
+			kubeProxyVersion: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.DisableNodeKubeProxyVersion, !tc.kubeProxyVersion)
+
+			ctx := context.Background()
 			versionInfoFunc := func() (*cadvisorapiv1.VersionInfo, error) {
 				return tc.versionInfo, tc.versionInfoError
 			}
 			runtimeTypeFunc := func() string {
 				return tc.runtimeType
 			}
-			runtimeVersionFunc := func() (kubecontainer.Version, error) {
+			runtimeVersionFunc := func(_ context.Context) (kubecontainer.Version, error) {
 				return tc.runtimeVersion, tc.runtimeVersionError
 			}
 			// construct setter
 			setter := VersionInfo(versionInfoFunc, runtimeTypeFunc, runtimeVersionFunc)
 			// call setter on node
-			err := setter(tc.node)
+			err := setter(ctx, tc.node)
 			require.Equal(t, tc.expectError, err)
 			// check expected node
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectNode, tc.node),
-				"Diff: %s", diff.ObjectDiff(tc.expectNode, tc.node))
+				"Diff: %s", cmp.Diff(tc.expectNode, tc.node))
 		})
 	}
 }
@@ -1068,6 +1453,7 @@ func TestImages(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			imageListFunc := func() ([]kubecontainer.Image, error) {
 				// today, imageListFunc is expected to return a sorted list,
 				// but we may choose to sort in the setter at some future point
@@ -1079,7 +1465,7 @@ func TestImages(t *testing.T) {
 			setter := Images(tc.maxImages, imageListFunc)
 			// call setter on node
 			node := &v1.Node{}
-			err := setter(node)
+			err := setter(ctx, node)
 			require.Equal(t, tc.expectError, err)
 			// check expected node, image list should be reset to empty when there is an error
 			expectNode := &v1.Node{}
@@ -1087,7 +1473,7 @@ func TestImages(t *testing.T) {
 				expectNode.Status.Images = makeExpectedImageList(tc.imageList, tc.maxImages, MaxNamesPerImageInNodeStatus)
 			}
 			assert.True(t, apiequality.Semantic.DeepEqual(expectNode, node),
-				"Diff: %s", diff.ObjectDiff(expectNode, node))
+				"Diff: %s", cmp.Diff(expectNode, node))
 		})
 	}
 
@@ -1109,17 +1495,27 @@ func TestReadyCondition(t *testing.T) {
 		},
 	}
 
+	withoutStorageCapacity := &v1.Node{
+		Status: v1.NodeStatus{
+			Capacity: v1.ResourceList{
+				v1.ResourceCPU:    *resource.NewMilliQuantity(2000, resource.DecimalSI),
+				v1.ResourceMemory: *resource.NewQuantity(10e9, resource.BinarySI),
+				v1.ResourcePods:   *resource.NewQuantity(100, resource.DecimalSI),
+			},
+		},
+	}
+
 	cases := []struct {
-		desc                      string
-		node                      *v1.Node
-		runtimeErrors             error
-		networkErrors             error
-		storageErrors             error
-		appArmorValidateHostFunc  func() error
-		cmStatus                  cm.Status
-		nodeShutdownManagerErrors error
-		expectConditions          []v1.NodeCondition
-		expectEvents              []testEvent
+		desc                                 string
+		node                                 *v1.Node
+		runtimeErrors                        error
+		networkErrors                        error
+		storageErrors                        error
+		cmStatus                             cm.Status
+		nodeShutdownManagerErrors            error
+		expectConditions                     []v1.NodeCondition
+		expectEvents                         []testEvent
+		disableLocalStorageCapacityIsolation bool
 	}{
 		{
 			desc:             "new, ready",
@@ -1128,19 +1524,6 @@ func TestReadyCondition(t *testing.T) {
 			// TODO(mtaufen): The current behavior is that we don't send an event for the initial NodeReady condition,
 			// the reason for this is unclear, so we may want to actually send an event, and change these test cases
 			// to ensure an event is sent.
-		},
-		{
-			desc:                     "new, ready: apparmor validator passed",
-			node:                     withCapacity.DeepCopy(),
-			appArmorValidateHostFunc: func() error { return nil },
-			expectConditions:         []v1.NodeCondition{*makeReadyCondition(true, "kubelet is posting ready status. AppArmor enabled", now, now)},
-		},
-		{
-			desc:                     "new, ready: apparmor validator failed",
-			node:                     withCapacity.DeepCopy(),
-			appArmorValidateHostFunc: func() error { return fmt.Errorf("foo") },
-			// absence of an additional message is understood to mean that AppArmor is disabled
-			expectConditions: []v1.NodeCondition{*makeReadyCondition(true, "kubelet is posting ready status", now, now)},
 		},
 		{
 			desc: "new, ready: soft requirement warning",
@@ -1173,6 +1556,12 @@ func TestReadyCondition(t *testing.T) {
 			desc:             "new, not ready: missing capacities",
 			node:             &v1.Node{},
 			expectConditions: []v1.NodeCondition{*makeReadyCondition(false, "missing node capacity for resources: cpu, memory, pods, ephemeral-storage", now, now)},
+		},
+		{
+			desc:                                 "new, ready: localStorageCapacityIsolation is not supported",
+			node:                                 withoutStorageCapacity.DeepCopy(),
+			disableLocalStorageCapacityIsolation: true,
+			expectConditions:                     []v1.NodeCondition{*makeReadyCondition(true, "kubelet is posting ready status", now, now)},
 		},
 		// the transition tests ensure timestamps are set correctly, no need to test the entire condition matrix in this section
 		{
@@ -1230,6 +1619,7 @@ func TestReadyCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			runtimeErrorsFunc := func() error {
 				return tc.runtimeErrors
 			}
@@ -1253,14 +1643,14 @@ func TestReadyCondition(t *testing.T) {
 				})
 			}
 			// construct setter
-			setter := ReadyCondition(nowFunc, runtimeErrorsFunc, networkErrorsFunc, storageErrorsFunc, tc.appArmorValidateHostFunc, cmStatusFunc, nodeShutdownErrorsFunc, recordEventFunc)
+			setter := ReadyCondition(nowFunc, runtimeErrorsFunc, networkErrorsFunc, storageErrorsFunc, cmStatusFunc, nodeShutdownErrorsFunc, recordEventFunc, !tc.disableLocalStorageCapacityIsolation)
 			// call setter on node
-			if err := setter(tc.node); err != nil {
+			if err := setter(ctx, tc.node); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			// check expected condition
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectConditions, tc.node.Status.Conditions),
-				"Diff: %s", diff.ObjectDiff(tc.expectConditions, tc.node.Status.Conditions))
+				"Diff: %s", cmp.Diff(tc.expectConditions, tc.node.Status.Conditions))
 			// check expected events
 			require.Equal(t, len(tc.expectEvents), len(events))
 			for i := range tc.expectEvents {
@@ -1363,6 +1753,7 @@ func TestMemoryPressureCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			events := []testEvent{}
 			recordEventFunc := func(eventType, event string) {
 				events = append(events, testEvent{
@@ -1376,12 +1767,12 @@ func TestMemoryPressureCondition(t *testing.T) {
 			// construct setter
 			setter := MemoryPressureCondition(nowFunc, pressureFunc, recordEventFunc)
 			// call setter on node
-			if err := setter(tc.node); err != nil {
+			if err := setter(ctx, tc.node); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			// check expected condition
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectConditions, tc.node.Status.Conditions),
-				"Diff: %s", diff.ObjectDiff(tc.expectConditions, tc.node.Status.Conditions))
+				"Diff: %s", cmp.Diff(tc.expectConditions, tc.node.Status.Conditions))
 			// check expected events
 			require.Equal(t, len(tc.expectEvents), len(events))
 			for i := range tc.expectEvents {
@@ -1484,6 +1875,7 @@ func TestPIDPressureCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			events := []testEvent{}
 			recordEventFunc := func(eventType, event string) {
 				events = append(events, testEvent{
@@ -1497,12 +1889,12 @@ func TestPIDPressureCondition(t *testing.T) {
 			// construct setter
 			setter := PIDPressureCondition(nowFunc, pressureFunc, recordEventFunc)
 			// call setter on node
-			if err := setter(tc.node); err != nil {
+			if err := setter(ctx, tc.node); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			// check expected condition
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectConditions, tc.node.Status.Conditions),
-				"Diff: %s", diff.ObjectDiff(tc.expectConditions, tc.node.Status.Conditions))
+				"Diff: %s", cmp.Diff(tc.expectConditions, tc.node.Status.Conditions))
 			// check expected events
 			require.Equal(t, len(tc.expectEvents), len(events))
 			for i := range tc.expectEvents {
@@ -1605,6 +1997,7 @@ func TestDiskPressureCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			events := []testEvent{}
 			recordEventFunc := func(eventType, event string) {
 				events = append(events, testEvent{
@@ -1618,12 +2011,12 @@ func TestDiskPressureCondition(t *testing.T) {
 			// construct setter
 			setter := DiskPressureCondition(nowFunc, pressureFunc, recordEventFunc)
 			// call setter on node
-			if err := setter(tc.node); err != nil {
+			if err := setter(ctx, tc.node); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			// check expected condition
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectConditions, tc.node.Status.Conditions),
-				"Diff: %s", diff.ObjectDiff(tc.expectConditions, tc.node.Status.Conditions))
+				"Diff: %s", cmp.Diff(tc.expectConditions, tc.node.Status.Conditions))
 			// check expected events
 			require.Equal(t, len(tc.expectEvents), len(events))
 			for i := range tc.expectEvents {
@@ -1665,6 +2058,7 @@ func TestVolumesInUse(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
+			ctx := context.Background()
 			syncedFunc := func() bool {
 				return tc.synced
 			}
@@ -1674,75 +2068,51 @@ func TestVolumesInUse(t *testing.T) {
 			// construct setter
 			setter := VolumesInUse(syncedFunc, volumesInUseFunc)
 			// call setter on node
-			if err := setter(tc.node); err != nil {
+			if err := setter(ctx, tc.node); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			// check expected volumes
 			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectVolumesInUse, tc.node.Status.VolumesInUse),
-				"Diff: %s", diff.ObjectDiff(tc.expectVolumesInUse, tc.node.Status.VolumesInUse))
+				"Diff: %s", cmp.Diff(tc.expectVolumesInUse, tc.node.Status.VolumesInUse))
 		})
 	}
 }
 
-func TestVolumeLimits(t *testing.T) {
-	const (
-		volumeLimitKey = "attachable-volumes-fake-provider"
-		volumeLimitVal = 16
-	)
-
-	var cases = []struct {
-		desc             string
-		volumePluginList []volume.VolumePluginWithAttachLimits
-		expectNode       *v1.Node
+func TestDaemonEndpoints(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		endpoints *v1.NodeDaemonEndpoints
+		expected  *v1.NodeDaemonEndpoints
 	}{
 		{
-			desc: "translate limits to capacity and allocatable for plugins that return successfully from GetVolumeLimits",
-			volumePluginList: []volume.VolumePluginWithAttachLimits{
-				&volumetest.FakeVolumePlugin{
-					VolumeLimits: map[string]int64{volumeLimitKey: volumeLimitVal},
+			name:      "empty daemon endpoints",
+			endpoints: &v1.NodeDaemonEndpoints{},
+			expected:  &v1.NodeDaemonEndpoints{KubeletEndpoint: v1.DaemonEndpoint{Port: 0}},
+		},
+		{
+			name:      "daemon endpoints with specific port",
+			endpoints: &v1.NodeDaemonEndpoints{KubeletEndpoint: v1.DaemonEndpoint{Port: 5678}},
+			expected:  &v1.NodeDaemonEndpoints{KubeletEndpoint: v1.DaemonEndpoint{Port: 5678}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			existingNode := &v1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: testKubeletHostname,
 				},
-			},
-			expectNode: &v1.Node{
+				Spec: v1.NodeSpec{},
 				Status: v1.NodeStatus{
-					Capacity: v1.ResourceList{
-						volumeLimitKey: *resource.NewQuantity(volumeLimitVal, resource.DecimalSI),
-					},
-					Allocatable: v1.ResourceList{
-						volumeLimitKey: *resource.NewQuantity(volumeLimitVal, resource.DecimalSI),
-					},
+					Addresses: []v1.NodeAddress{},
 				},
-			},
-		},
-		{
-			desc: "skip plugins that return errors from GetVolumeLimits",
-			volumePluginList: []volume.VolumePluginWithAttachLimits{
-				&volumetest.FakeVolumePlugin{
-					VolumeLimitsError: fmt.Errorf("foo"),
-				},
-			},
-			expectNode: &v1.Node{},
-		},
-		{
-			desc:       "no plugins",
-			expectNode: &v1.Node{},
-		},
-	}
+			}
 
-	for _, tc := range cases {
-		t.Run(tc.desc, func(t *testing.T) {
-			volumePluginListFunc := func() []volume.VolumePluginWithAttachLimits {
-				return tc.volumePluginList
+			setter := DaemonEndpoints(test.endpoints)
+			if err := setter(ctx, existingNode); err != nil {
+				t.Fatal(err)
 			}
-			// construct setter
-			setter := VolumeLimits(volumePluginListFunc)
-			// call setter on node
-			node := &v1.Node{}
-			if err := setter(node); err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			// check expected node
-			assert.True(t, apiequality.Semantic.DeepEqual(tc.expectNode, node),
-				"Diff: %s", diff.ObjectDiff(tc.expectNode, node))
+
+			assert.Equal(t, *test.expected, existingNode.Status.DaemonEndpoints)
 		})
 	}
 }
@@ -1797,7 +2167,7 @@ func makeExpectedImageList(imageList []kubecontainer.Image, maxImages, maxNames 
 func makeImageTags(num int32) []string {
 	tags := make([]string, num)
 	for i := range tags {
-		tags[i] = "k8s.gcr.io:v" + strconv.Itoa(i)
+		tags[i] = "registry.k8s.io:v" + strconv.Itoa(i)
 	}
 	return tags
 }

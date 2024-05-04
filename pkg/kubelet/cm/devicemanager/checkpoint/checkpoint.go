@@ -27,7 +27,7 @@ import (
 // DeviceManagerCheckpoint defines the operations to retrieve pod devices
 type DeviceManagerCheckpoint interface {
 	checkpointmanager.Checkpoint
-	GetDataInLatestFormat() ([]PodDevicesEntry, map[string][]string)
+	GetData() ([]PodDevicesEntry, map[string][]string)
 }
 
 // DevicesPerNUMA represents device ids obtained from device plugin per NUMA node id
@@ -62,9 +62,9 @@ func NewDevicesPerNUMA() DevicesPerNUMA {
 }
 
 // Devices is a function that returns all device ids for all NUMA nodes
-// and represent it as sets.String
-func (dev DevicesPerNUMA) Devices() sets.String {
-	result := sets.NewString()
+// and represent it as sets.Set[string]
+func (dev DevicesPerNUMA) Devices() sets.Set[string] {
+	result := sets.New[string]()
 
 	for _, devs := range dev {
 		result.Insert(devs...)
@@ -74,10 +74,10 @@ func (dev DevicesPerNUMA) Devices() sets.String {
 
 // New returns an instance of Checkpoint - must be an alias for the most recent version
 func New(devEntries []PodDevicesEntry, devices map[string][]string) DeviceManagerCheckpoint {
-	return NewV2(devEntries, devices)
+	return newV2(devEntries, devices)
 }
 
-func NewV2(devEntries []PodDevicesEntry, devices map[string][]string) DeviceManagerCheckpoint {
+func newV2(devEntries []PodDevicesEntry, devices map[string][]string) DeviceManagerCheckpoint {
 	return &Data{
 		Data: checkpointData{
 			PodDeviceEntries:  devEntries,
@@ -102,8 +102,8 @@ func (cp *Data) VerifyChecksum() error {
 	return cp.Checksum.Verify(cp.Data)
 }
 
-// GetDataInLatestFormat returns device entries and registered devices in the *most recent*
+// GetData returns device entries and registered devices in the *most recent*
 // checkpoint format, *not* in the original format stored on disk.
-func (cp *Data) GetDataInLatestFormat() ([]PodDevicesEntry, map[string][]string) {
+func (cp *Data) GetData() ([]PodDevicesEntry, map[string][]string) {
 	return cp.Data.PodDeviceEntries, cp.Data.RegisteredDevices
 }

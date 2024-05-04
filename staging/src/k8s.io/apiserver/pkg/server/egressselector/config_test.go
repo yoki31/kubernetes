@@ -18,10 +18,11 @@ package egressselector
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"reflect"
 	"testing"
+
+	utiltesting "k8s.io/client-go/util/testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver"
@@ -244,7 +245,7 @@ spec:
           hostPath:
             path: /etc/srv/kubernetes/pki/konnectivity-agent
       containers:
-        - image: k8s.gcr.io/proxy-agent:v0.0.3
+        - image: registry.k8s.io/proxy-agent:v0.0.3
           name: proxy-agent
           command: ["/proxy-agent"]
           args: ["--caCert=/etc/srv/kubernetes/pki/proxy-agent/ca.crt", "--agentCert=/etc/srv/kubernetes/pki/proxy-agent/client.crt", "--agentKey=/etc/srv/kubernetes/pki/proxy-agent/client.key", "--proxyServerHost=127.0.0.1", "--proxyServerPort=8132"]
@@ -277,12 +278,12 @@ spec:
 		t.Run(tc.name, func(t *testing.T) {
 			proxyConfig := fmt.Sprintf("test-egress-selector-config-%s", tc.name)
 			if tc.createFile {
-				f, err := ioutil.TempFile("", proxyConfig)
+				f, err := os.CreateTemp("", proxyConfig)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer os.Remove(f.Name())
-				if err := ioutil.WriteFile(f.Name(), []byte(tc.contents), os.FileMode(0755)); err != nil {
+				defer utiltesting.CloseAndRemove(t, f)
+				if err := os.WriteFile(f.Name(), []byte(tc.contents), os.FileMode(0755)); err != nil {
 					t.Fatal(err)
 				}
 				proxyConfig = f.Name()
@@ -540,9 +541,9 @@ func TestValidateEgressSelectorConfiguration(t *testing.T) {
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
 			errs := ValidateEgressSelectorConfiguration(tc.contents)
-			if tc.expectError == false && len(errs) != 0 {
+			if !tc.expectError && len(errs) != 0 {
 				t.Errorf("Calling ValidateEgressSelectorConfiguration expected no error, got %v", errs)
-			} else if tc.expectError == true && len(errs) == 0 {
+			} else if tc.expectError && len(errs) == 0 {
 				t.Errorf("Calling ValidateEgressSelectorConfiguration expected error, got no error")
 			}
 		})

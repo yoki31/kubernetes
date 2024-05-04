@@ -59,15 +59,20 @@ type NodeStats struct {
 	// Stats about the rlimit of system.
 	// +optional
 	Rlimit *RlimitStats `json:"rlimit,omitempty"`
+	// Stats pertaining to swap resources. This is reported to non-windows systems only.
+	// +optional
+	Swap *SwapStats `json:"swap,omitempty"`
 }
 
 // RlimitStats are stats rlimit of OS.
 type RlimitStats struct {
 	Time metav1.Time `json:"time"`
 
-	// The max PID of OS.
+	// The max number of extant process (threads, precisely on Linux) of OS. See RLIMIT_NPROC in getrlimit(2).
+	// The operating system ceiling on the number of process IDs that can be assigned.
+	// On Linux, tasks (either processes or threads) consume 1 PID each.
 	MaxPID *int64 `json:"maxpid,omitempty"`
-	// The number of running process in the OS.
+	// The number of running process (threads, precisely on Linux) in the OS.
 	NumOfRunningProcesses *int64 `json:"curproc,omitempty"`
 }
 
@@ -78,6 +83,11 @@ type RuntimeStats struct {
 	// Usage here refers to the total number of bytes occupied by images on the filesystem.
 	// +optional
 	ImageFs *FsStats `json:"imageFs,omitempty"`
+	// Stats about the underlying filesystem where container's writeable layer is stored.
+	// This filesystem could be the same as the primary (root) filesystem or the ImageFS.
+	// Usage here refers to the total number of bytes occupied by the writeable layer on the filesystem.
+	// +optional
+	ContainerFs *FsStats `json:"containerFs,omitempty"`
 }
 
 const (
@@ -129,6 +139,9 @@ type PodStats struct {
 	// ProcessStats pertaining to processes.
 	// +optional
 	ProcessStats *ProcessStats `json:"process_stats,omitempty"`
+	// Stats pertaining to swap resources. This is reported to non-windows systems only.
+	// +optional
+	Swap *SwapStats `json:"swap,omitempty"`
 }
 
 // ContainerStats holds container-level unprocessed sample stats.
@@ -157,6 +170,9 @@ type ContainerStats struct {
 	// +patchMergeKey=name
 	// +patchStrategy=merge
 	UserDefinedMetrics []UserDefinedMetric `json:"userDefinedMetrics,omitempty" patchStrategy:"merge" patchMergeKey:"name"`
+	// Stats pertaining to swap resources. This is reported to non-windows systems only.
+	// +optional
+	Swap *SwapStats `json:"swap,omitempty"`
 }
 
 // PodReference contains enough information to locate the referenced pod.
@@ -235,6 +251,19 @@ type MemoryStats struct {
 	MajorPageFaults *uint64 `json:"majorPageFaults,omitempty"`
 }
 
+// SwapStats contains data about memory usage
+type SwapStats struct {
+	// The time at which these stats were updated.
+	Time metav1.Time `json:"time"`
+	// Available swap memory for use.  This is defined as the <swap-limit> - <current-swap-usage>.
+	// If swap limit is undefined, this value is omitted.
+	// +optional
+	SwapAvailableBytes *uint64 `json:"swapAvailableBytes,omitempty"`
+	// Total swap memory in use.
+	// +optional
+	SwapUsageBytes *uint64 `json:"swapUsageBytes,omitempty"`
+}
+
 // AcceleratorStats contains stats for accelerators attached to the container.
 type AcceleratorStats struct {
 	// Make of the accelerator (nvidia, amd, google etc.)
@@ -269,6 +298,17 @@ type VolumeStats struct {
 	// Reference to the PVC, if one exists
 	// +optional
 	PVCRef *PVCReference `json:"pvcRef,omitempty"`
+
+	// VolumeHealthStats contains data about volume health
+	// +optional
+	VolumeHealthStats *VolumeHealthStats `json:"volumeHealthStats,omitempty"`
+}
+
+// VolumeHealthStats contains data about volume health.
+type VolumeHealthStats struct {
+	// Normal volumes are available for use and operating optimally.
+	// An abnormal volume does not meet these criteria.
+	Abnormal bool `json:"abnormal"`
 }
 
 // PVCReference contains enough information to describe the referenced PVC.

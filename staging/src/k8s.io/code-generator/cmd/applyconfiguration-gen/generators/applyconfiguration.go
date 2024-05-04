@@ -18,10 +18,12 @@ package generators
 
 import (
 	"io"
+	"path"
+	"strings"
 
-	"k8s.io/gengo/generator"
-	"k8s.io/gengo/namer"
-	"k8s.io/gengo/types"
+	"k8s.io/gengo/v2/generator"
+	"k8s.io/gengo/v2/namer"
+	"k8s.io/gengo/v2/types"
 	"k8s.io/klog/v2"
 
 	"k8s.io/code-generator/cmd/client-gen/generators/util"
@@ -30,14 +32,15 @@ import (
 
 // applyConfigurationGenerator produces apply configurations for a given GroupVersion and type.
 type applyConfigurationGenerator struct {
-	generator.DefaultGen
-	outputPackage string
-	localPackage  types.Name
-	groupVersion  clientgentypes.GroupVersion
-	applyConfig   applyConfig
-	imports       namer.ImportTracker
-	refGraph      refGraph
-	openAPIType   *string // if absent, extraction function cannot be generated
+	generator.GoGenerator
+	// outPkgBase is the base package, under which the "internal" and GV-specific subdirs live
+	outPkgBase   string // must be a Go import-path
+	localPkg     string
+	groupVersion clientgentypes.GroupVersion
+	applyConfig  applyConfig
+	imports      namer.ImportTracker
+	refGraph     refGraph
+	openAPIType  *string // if absent, extraction function cannot be generated
 }
 
 var _ generator.Generator = &applyConfigurationGenerator{}
@@ -48,7 +51,7 @@ func (g *applyConfigurationGenerator) Filter(_ *generator.Context, t *types.Type
 
 func (g *applyConfigurationGenerator) Namers(*generator.Context) namer.NameSystems {
 	return namer.NameSystems{
-		"raw":          namer.NewRawNamer(g.localPackage.Package, g.imports),
+		"raw":          namer.NewRawNamer(g.localPkg, g.imports),
 		"singularKind": namer.NewPublicNamer(0),
 	}
 }
@@ -89,7 +92,7 @@ func (g *applyConfigurationGenerator) GenerateType(c *generator.Context, t *type
 		Tags:        genclientTags(t),
 		APIVersion:  g.groupVersion.ToAPIVersion(),
 		ExtractInto: extractInto,
-		ParserFunc:  types.Ref(g.outputPackage+"/internal", "Parser"),
+		ParserFunc:  types.Ref(path.Join(g.outPkgBase, "internal"), "Parser"),
 		OpenAPIType: g.openAPIType,
 	}
 
@@ -105,14 +108,34 @@ func (g *applyConfigurationGenerator) GenerateType(c *generator.Context, t *type
 			g.generateClientgenExtract(sw, typeParams, !typeParams.Tags.NoStatus)
 		}
 	} else {
-		sw.Do(constructor, typeParams)
+		if hasTypeMetaField(t) {
+			sw.Do(constructorWithTypeMeta, typeParams)
+		} else {
+			sw.Do(constructor, typeParams)
+		}
 	}
 	g.generateWithFuncs(t, typeParams, sw, nil)
 	return sw.Error()
 }
 
+func hasTypeMetaField(t *types.Type) bool {
+	for _, member := range t.Members {
+		if typeMeta.Name == member.Type.Name && member.Embedded {
+			return true
+		}
+	}
+	return false
+}
+
 func blocklisted(t *types.Type, member types.Member) bool {
 	if objectMeta.Name == t.Name && member.Name == "ManagedFields" {
+		return true
+	}
+	if objectMeta.Name == t.Name && member.Name == "SelfLink" {
+		return true
+	}
+	// Hide any fields which are en route to deletion.
+	if strings.HasPrefix(member.Name, "ZZZ_") {
 		return true
 	}
 	return false
@@ -136,7 +159,6 @@ func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParam
 				EmbeddedIn: embed,
 			}
 			if memberParams.Member.Embedded {
-
 				g.generateWithFuncs(member.Type, typeParams, sw, &memberParams)
 				if !jsonTags.inline {
 					// non-inlined embeds are nillable and need a "ensure exists" utility function
@@ -144,12 +166,13 @@ func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParam
 				}
 				continue
 			}
+
 			// For slices where the items are generated apply configuration types, accept varargs of
 			// pointers of the type as "with" function arguments so the "with" function can be used like so:
 			// WithFoos(Foo().WithName("x"), Foo().WithName("y"))
 			if t := deref(member.Type); t.Kind == types.Slice && g.refGraph.isApplyConfig(t.Elem) {
 				memberParams.ArgType = &types.Type{Kind: types.Pointer, Elem: memberType.Elem}
-				g.generateMemberWithForSlice(sw, memberParams)
+				g.generateMemberWithForSlice(sw, member, memberParams)
 				continue
 			}
 			// Note: There are no maps where the values are generated apply configurations (because
@@ -161,7 +184,7 @@ func (g *applyConfigurationGenerator) generateWithFuncs(t *types.Type, typeParam
 			switch memberParams.Member.Type.Kind {
 			case types.Slice:
 				memberParams.ArgType = memberType.Elem
-				g.generateMemberWithForSlice(sw, memberParams)
+				g.generateMemberWithForSlice(sw, member, memberParams)
 			case types.Map:
 				g.generateMemberWithForMap(sw, memberParams)
 			default:
@@ -231,20 +254,39 @@ func (g *applyConfigurationGenerator) generateMemberWith(sw *generator.SnippetWr
 	sw.Do("}\n", memberParams)
 }
 
-func (g *applyConfigurationGenerator) generateMemberWithForSlice(sw *generator.SnippetWriter, memberParams memberParams) {
+func (g *applyConfigurationGenerator) generateMemberWithForSlice(sw *generator.SnippetWriter, member types.Member, memberParams memberParams) {
+	memberIsPointerToSlice := member.Type.Kind == types.Pointer
+	if memberIsPointerToSlice {
+		sw.Do(ensureNonEmbedSliceExists, memberParams)
+	}
+
 	sw.Do("// With$.Member.Name$ adds the given value to the $.Member.Name$ field in the declarative configuration\n", memberParams)
 	sw.Do("// and returns the receiver, so that objects can be build by chaining \"With\" function invocations.\n", memberParams)
 	sw.Do("// If called multiple times, values provided by each call will be appended to the $.Member.Name$ field.\n", memberParams)
 	sw.Do("func (b *$.ApplyConfig.ApplyConfiguration|public$) With$.Member.Name$(values ...$.ArgType|raw$) *$.ApplyConfig.ApplyConfiguration|public$ {\n", memberParams)
 	g.ensureEnbedExistsIfApplicable(sw, memberParams)
+
+	if memberIsPointerToSlice {
+		sw.Do("b.ensure$.MemberType.Elem|public$Exists()\n", memberParams)
+	}
+
 	sw.Do("  for i := range values {\n", memberParams)
 	if memberParams.ArgType.Kind == types.Pointer {
 		sw.Do("if values[i] == nil {\n", memberParams)
 		sw.Do("  panic(\"nil value passed to With$.Member.Name$\")\n", memberParams)
 		sw.Do("}\n", memberParams)
-		sw.Do("b.$.Member.Name$ = append(b.$.Member.Name$, *values[i])\n", memberParams)
+
+		if memberIsPointerToSlice {
+			sw.Do("*b.$.Member.Name$ = append(*b.$.Member.Name$, *values[i])\n", memberParams)
+		} else {
+			sw.Do("b.$.Member.Name$ = append(b.$.Member.Name$, *values[i])\n", memberParams)
+		}
 	} else {
-		sw.Do("b.$.Member.Name$ = append(b.$.Member.Name$, values[i])\n", memberParams)
+		if memberIsPointerToSlice {
+			sw.Do("*b.$.Member.Name$ = append(*b.$.Member.Name$, values[i])\n", memberParams)
+		} else {
+			sw.Do("b.$.Member.Name$ = append(b.$.Member.Name$, values[i])\n", memberParams)
+		}
 	}
 	sw.Do("  }\n", memberParams)
 	sw.Do("  return b\n", memberParams)
@@ -284,9 +326,17 @@ func (b *$.ApplyConfig.ApplyConfiguration|public$) ensure$.MemberType.Elem|publi
 }
 `
 
+var ensureNonEmbedSliceExists = `
+func (b *$.ApplyConfig.ApplyConfiguration|public$) ensure$.MemberType.Elem|public$Exists() {
+  if b.$.Member.Name$ == nil {
+    b.$.Member.Name$ = &[]$.MemberType.Elem|raw${}
+  }
+}
+`
+
 var clientgenTypeConstructorNamespaced = `
 // $.ApplyConfig.Type|public$ constructs an declarative configuration of the $.ApplyConfig.Type|public$ type for use with
-// apply. 
+// apply.
 func $.ApplyConfig.Type|public$(name, namespace string) *$.ApplyConfig.ApplyConfiguration|public$ {
   b := &$.ApplyConfig.ApplyConfiguration|public${}
   b.WithName(name)
@@ -303,6 +353,17 @@ var clientgenTypeConstructorNonNamespaced = `
 func $.ApplyConfig.Type|public$(name string) *$.ApplyConfig.ApplyConfiguration|public$ {
   b := &$.ApplyConfig.ApplyConfiguration|public${}
   b.WithName(name)
+  b.WithKind("$.ApplyConfig.Type|singularKind$")
+  b.WithAPIVersion("$.APIVersion$")
+  return b
+}
+`
+
+var constructorWithTypeMeta = `
+// $.ApplyConfig.ApplyConfiguration|public$ constructs an declarative configuration of the $.ApplyConfig.Type|public$ type for use with
+// apply.
+func $.ApplyConfig.Type|public$() *$.ApplyConfig.ApplyConfiguration|public$ {
+  b := &$.ApplyConfig.ApplyConfiguration|public${}
   b.WithKind("$.ApplyConfig.Type|singularKind$")
   b.WithAPIVersion("$.APIVersion$")
   return b

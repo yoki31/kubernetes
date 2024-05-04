@@ -18,10 +18,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"reflect"
-	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"k8s.io/component-base/metrics"
 )
@@ -119,16 +119,10 @@ var _ = NewCounter(
 }
 
 func TestStableMetric(t *testing.T) {
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("unable to fetch path to testing package - needed for simulating import path tests")
-	}
-
 	for _, test := range []struct {
 		testName string
 		src      string
 		metric   metric
-		kubeRoot string
 	}{
 		{
 			testName: "Counter",
@@ -308,6 +302,21 @@ var _ = custom.NewCounter(
 	)
 `},
 		{
+			testName: "Custom import NewDesc",
+			metric: metric{
+				Name:           "apiserver_storage_size_bytes",
+				Help:           "Size of the storage database file physically allocated in bytes.",
+				Labels:         []string{"server"},
+				StabilityLevel: "STABLE",
+				Type:           customType,
+				ConstLabels:    map[string]string{},
+			},
+			src: `
+package test
+import custom "k8s.io/component-base/metrics"
+var _ = custom.NewDesc("apiserver_storage_size_bytes", "Size of the storage database file physically allocated in bytes.", []string{"server"}, nil, custom.STABLE, "")
+`},
+		{
 			testName: "Const",
 			metric: metric{
 				Name:           "metric",
@@ -444,26 +453,6 @@ var _ = metrics.NewHistogram(
 	)
 `},
 		{
-			testName: "Imported stdlib constant",
-			metric: metric{
-				Name:           "importedCounter",
-				StabilityLevel: "STABLE",
-				Subsystem:      "GET",
-				Type:           counterMetricType,
-			},
-			src: `
-package test
-import "k8s.io/component-base/metrics"
-import "net/http"
-var _ = metrics.NewCounter(
-	&metrics.CounterOpts{
-			Name: "importedCounter",
-			StabilityLevel: metrics.STABLE,
-			Subsystem: http.MethodGet,
-		},
-	)
-`},
-		{
 			testName: "Imported k8s.io constant",
 			metric: metric{
 				Name:           "importedCounter",
@@ -471,7 +460,6 @@ var _ = metrics.NewCounter(
 				Subsystem:      "kubelet",
 				Type:           counterMetricType,
 			},
-			kubeRoot: strings.Join([]string{wd, "testdata"}, string(os.PathSeparator)),
 			src: `
 package test
 import compbasemetrics "k8s.io/component-base/metrics"
@@ -484,38 +472,8 @@ var _ = compbasemetrics.NewCounter(
 	},
 	)
 `},
-		{
-			testName: "Imported k8s.io/staging constant",
-			metric: metric{
-				Name:           "importedCounter",
-				StabilityLevel: "STABLE",
-				Subsystem:      "ThisIsNotTheSoundOfTheTrain",
-				Type:           counterMetricType,
-			},
-			kubeRoot: strings.Join([]string{wd, "testdata"}, string(os.PathSeparator)),
-			src: `
-package test
-import compbasemetrics "k8s.io/component-base/metrics"
-import "k8s.io/metrics"
-var _ = compbasemetrics.NewCounter(
-	&compbasemetrics.CounterOpts{
-		Name: "importedCounter",
-		StabilityLevel: compbasemetrics.STABLE,
-		Subsystem: metrics.OKGO,
-	},
-	)
-`},
 	} {
 		t.Run(test.testName, func(t *testing.T) {
-			// these sub-tests cannot be run in parallel with the below
-			if test.kubeRoot != "" {
-				priorKRoot := KUBE_ROOT
-				KUBE_ROOT = test.kubeRoot
-				defer func() {
-					KUBE_ROOT = priorKRoot
-				}()
-			}
-
 			metrics, errors := searchFileForStableMetrics(fakeFilename, test.src)
 			if len(errors) != 0 {
 				t.Errorf("Unexpected errors: %s", errors)
@@ -526,8 +484,8 @@ var _ = compbasemetrics.NewCounter(
 			if test.metric.Labels == nil {
 				test.metric.Labels = []string{}
 			}
-			if !reflect.DeepEqual(metrics[0], test.metric) {
-				t.Errorf("metric:\ngot  %v\nwant %v", metrics[0], test.metric)
+			if diff := cmp.Diff(metrics[0], test.metric); diff != "" {
+				t.Errorf("metric diff: %s", diff)
 			}
 		})
 	}
@@ -539,18 +497,6 @@ func TestIncorrectStableMetricDeclarations(t *testing.T) {
 		src      string
 		err      error
 	}{
-		{
-			testName: "Fail on stable summary metric (Summary is DEPRECATED)",
-			err:      fmt.Errorf("testdata/metric.go:4:9: Stable summary metric is not supported"),
-			src: `
-package test
-import "k8s.io/component-base/metrics"
-var _ = metrics.NewSummary(
-		&metrics.SummaryOpts{
-			StabilityLevel: metrics.STABLE,
-		},
-	)
-`},
 		{
 			testName: "Fail on stable metric with attribute set to unknown variable",
 			err:      fmt.Errorf("testdata/metric.go:6:4: Metric attribute was not correctly set. Please use only global consts in same file"),
@@ -586,17 +532,17 @@ var _ = metrics.NewCounter(
 			src: `
 package test
 import "k8s.io/component-base/metrics"
-import "k8s.io/kubernetes/utils"
+import "os"
 var _ = metrics.NewCounter(
 		&metrics.CounterOpts{
-			Name:           utils.getMetricName(),
+			Name:           os.Getenv("name"), // any imported function will do
 			StabilityLevel: metrics.STABLE,
 		},
 	)
 `},
 		{
 			testName: "Fail on metric with stability set to function return",
-			err:      fmt.Errorf("testdata/metric.go:9:20: StabilityLevel should be passed STABLE, ALPHA or removed"),
+			err:      fmt.Errorf("testdata/metric.go:9:20: %s", errStabilityLevel),
 			src: `
 package test
 import "k8s.io/component-base/metrics"
@@ -611,7 +557,7 @@ var _ = metrics.NewCounter(
 `},
 		{
 			testName: "error for passing stability as string",
-			err:      fmt.Errorf("testdata/metric.go:6:20: StabilityLevel should be passed STABLE, ALPHA or removed"),
+			err:      fmt.Errorf("testdata/metric.go:6:20: %s", errStabilityLevel),
 			src: `
 package test
 import "k8s.io/component-base/metrics"
@@ -622,20 +568,8 @@ var _ = metrics.NewCounter(
 	)
 `},
 		{
-			testName: "error for passing stability as unknown const",
-			err:      fmt.Errorf("testdata/metric.go:6:20: StabilityLevel should be passed STABLE, ALPHA or removed"),
-			src: `
-package test
-import "k8s.io/component-base/metrics"
-var _ = metrics.NewCounter(
-		&metrics.CounterOpts{
-			StabilityLevel: metrics.UNKNOWN,
-		},
-	)
-`},
-		{
 			testName: "error for passing stability as variable",
-			err:      fmt.Errorf("testdata/metric.go:7:20: StabilityLevel should be passed STABLE, ALPHA or removed"),
+			err:      fmt.Errorf("testdata/metric.go:7:20: %s", errStabilityLevel),
 			src: `
 package test
 import "k8s.io/component-base/metrics"
@@ -685,18 +619,6 @@ var _ = RegisterMetric(
 `},
 		{
 			testName: "error stable metric opts passed to imported function",
-			err:      fmt.Errorf("testdata/metric.go:4:9: Opts for STABLE metric was not directly passed to new metric function"),
-			src: `
-package test
-import "k8s.io/component-base/metrics"
-var _ = test.RegisterMetric(
-		&metrics.CounterOpts{
-			StabilityLevel: metrics.STABLE,
-		},
-	)
-`},
-		{
-			testName: "error stable metric opts passed to imported function",
 			err:      fmt.Errorf("testdata/metric.go:6:4: Positional arguments are not supported"),
 			src: `
 package test
@@ -708,7 +630,7 @@ var _ = metrics.NewCounter(
 	)
 `},
 		{
-			testName: "error stable historgram with unknown prometheus bucket variable",
+			testName: "error stable histogram with unknown prometheus bucket variable",
 			err:      fmt.Errorf("testdata/metric.go:9:13: Buckets should be set to list of floats, result from function call of prometheus.LinearBuckets or prometheus.ExponentialBuckets"),
 			src: `
 package test
@@ -723,17 +645,17 @@ var _ = metrics.NewHistogram(
 	)
 `},
 		{
-			testName: "error stable historgram with unknown bucket variable",
-			err:      fmt.Errorf("testdata/metric.go:9:13: Buckets should be set to list of floats, result from function call of prometheus.LinearBuckets or prometheus.ExponentialBuckets"),
+			testName: "error stable summary with unknown prometheus objective variable",
+			err:      fmt.Errorf("testdata/metric.go:9:16: Objectives should be set to map of floats to floats"),
 			src: `
 package test
 import "k8s.io/component-base/metrics"
-var buckets = []float64{1, 2, 3}
-var _ = metrics.NewHistogram(
-		&metrics.HistogramOpts{
-			Name: "histogram",
+import "github.com/prometheus/client_golang/prometheus"
+var _ = metrics.NewSummary(
+		&metrics.SummaryOpts{
+			Name: "summary",
 			StabilityLevel: metrics.STABLE,
-			Buckets: buckets,
+			Objectives: prometheus.FakeObjectives,
 		},
 	)
 `},
@@ -743,7 +665,7 @@ var _ = metrics.NewHistogram(
 			src: `
 package test
 import "k8s.io/component-base/metrics"
-import "github.com/fake_prometheus/prometheus"
+import "github.com/prometheus/client_golang/prometheus"
 var _ = metrics.NewHistogram(
 		&metrics.HistogramOpts{
 			Name: "histogram",
@@ -756,63 +678,10 @@ var _ = metrics.NewHistogram(
 		t.Run(test.testName, func(t *testing.T) {
 			_, errors := searchFileForStableMetrics(fakeFilename, test.src)
 			if len(errors) != 1 {
-				t.Fatalf("Unexpected number of errors, got %d, want 1", len(errors))
+				t.Errorf("Unexpected number of errors, got %d, want 1", len(errors))
 			}
 			if !reflect.DeepEqual(errors[0], test.err) {
 				t.Errorf("error:\ngot  %v\nwant %v", errors[0], test.err)
-			}
-		})
-	}
-}
-
-func Test_localImportPath(t *testing.T) {
-	KUBE_ROOT = "/home/pchristopher/go/src/k8s.io/kubernetes"
-	GOROOT := os.Getenv("GOROOT")
-
-	for _, test := range []struct {
-		name         string
-		importExpr   string
-		expectedPath string
-		errorExp     bool
-	}{
-		{
-			name:         "k8s local package",
-			importExpr:   "k8s.io/kubernetes/pkg/kubelet/metrics",
-			expectedPath: strings.Join([]string{KUBE_ROOT, "pkg", "kubelet", "metrics"}, string(os.PathSeparator)),
-			errorExp:     false,
-		},
-		{
-			name:         "k8s staging package",
-			importExpr:   "k8s.io/kubelet/metrics",
-			expectedPath: strings.Join([]string{KUBE_ROOT, "staging", "src", "k8s.io", "kubelet", "metrics"}, string(os.PathSeparator)),
-			errorExp:     false,
-		},
-		{
-			name:       "public package",
-			importExpr: "github.com/thisisnot/thesoundofthetrain",
-			errorExp:   true,
-		},
-		{
-			name:         "stl package",
-			importExpr:   "os",
-			expectedPath: strings.Join([]string{GOROOT, "src", "os"}, string(os.PathSeparator)),
-			errorExp:     false,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			path, err := localImportPath(test.importExpr)
-			if test.errorExp {
-				if err == nil {
-					t.Error("did not receive error as expected")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("received unexpected error %s", err)
-				}
-			}
-
-			if path != test.expectedPath {
-				t.Errorf("did not received expected path.  \nwant: %s \ngot:  %s", test.expectedPath, path)
 			}
 		})
 	}

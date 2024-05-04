@@ -30,14 +30,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/client-go/util/certificate/csr"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/component-base/metrics"
 	"k8s.io/kubernetes/pkg/apis/certificates"
-	"k8s.io/kubernetes/pkg/features"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func Test_countCSRDurationMetric(t *testing.T) {
@@ -52,7 +49,6 @@ func Test_countCSRDurationMetric(t *testing.T) {
 
 	tests := []struct {
 		name                       string
-		disableFeatureGate         bool
 		success                    bool
 		obj, old                   runtime.Object
 		options                    *metav1.UpdateOptions
@@ -70,7 +66,7 @@ func Test_countCSRDurationMetric(t *testing.T) {
 			old: &certificates.CertificateSigningRequest{
 				Spec: certificates.CertificateSigningRequestSpec{
 					SignerName:        "fancy",
-					ExpirationSeconds: pointer.Int32(77),
+					ExpirationSeconds: ptr.To[int32](77),
 				},
 			},
 			options:       &metav1.UpdateOptions{},
@@ -269,26 +265,6 @@ func Test_countCSRDurationMetric(t *testing.T) {
 			wantHonored:   false,
 		},
 		{
-			name:               "no metrics when feature gate is turned off",
-			disableFeatureGate: true,
-			success:            true,
-			obj: &certificates.CertificateSigningRequest{
-				Status: certificates.CertificateSigningRequestStatus{
-					Certificate: createCert(t, time.Hour, caPrivateKey, caCert),
-				},
-			},
-			old: &certificates.CertificateSigningRequest{
-				Spec: certificates.CertificateSigningRequestSpec{
-					SignerName:        "pandas",
-					ExpirationSeconds: csr.DurationToExpirationSeconds(time.Hour),
-				},
-			},
-			options:       &metav1.UpdateOptions{},
-			wantSigner:    "",
-			wantRequested: false,
-			wantHonored:   false,
-		},
-		{
 			name:    "old CSR already has a cert so it is ignored",
 			success: true,
 			obj: &certificates.CertificateSigningRequest{
@@ -410,11 +386,7 @@ func Test_countCSRDurationMetric(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.disableFeatureGate {
-				defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSRDuration, false)()
-			} else {
-				t.Parallel()
-			}
+			t.Parallel()
 
 			testReq := &testCounterVecMetric{}
 			testHon := &testCounterVecMetric{}

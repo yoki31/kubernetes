@@ -5,7 +5,7 @@ Building Kubernetes is easy if you take advantage of the containerized build env
 ## Requirements
 
 1. Docker, using one of the following configurations:
-  * **macOS** Install Docker for Mac. See installation instructions [here](https://docs.docker.com/docker-for-mac/).
+  * **macOS** Install Docker for Mac. See installation instructions [here](https://docs.docker.com/desktop/install/mac-install/).
      **Note**: You will want to set the Docker VM to have at least 8GB of initial memory or building will likely fail. (See: [#11852]( http://issue.k8s.io/11852)).
   * **Linux with local Docker**  Install Docker according to the [instructions](https://docs.docker.com/installation/#installation) for your OS.
   * **Windows with Docker Desktop WSL2 backend**  Install Docker according to the [instructions](https://docs.docker.com/docker-for-windows/wsl-tech-preview/). Be sure to store your sources in the local Linux file system, not the Windows remote mount at `/mnt/c`.
@@ -37,7 +37,7 @@ The following scripts are found in the [`build/`](.) directory. Note that all sc
 
 ## Basic Flow
 
-The scripts directly under [`build/`](.) are used to build and test.  They will ensure that the `kube-build` Docker image is built (based on [`build/build-image/Dockerfile`](build-image/Dockerfile) and after base image's `KUBE_BUILD_IMAGE_CROSS_TAG` from Dockerfile is replaced with one of those actual tags of the base image, like `v1.13.9-2`) and then execute the appropriate command in that container.  These scripts will both ensure that the right data is cached from run to run for incremental builds and will copy the results back out of the container. You can specify a different registry/name and version for `kube-cross` by setting `KUBE_CROSS_IMAGE` and `KUBE_CROSS_VERSION`, see [`build/common.sh`](build/common.sh) for more details.
+The scripts directly under [`build/`](.) are used to build and test.  They will ensure that the `kube-build` Docker image is built (based on [`build/build-image/Dockerfile`](build-image/Dockerfile) and after base image's `KUBE_BUILD_IMAGE_CROSS_TAG` from Dockerfile is replaced with one of those actual tags of the base image, like `v1.13.9-2`) and then execute the appropriate command in that container.  These scripts will both ensure that the right data is cached from run to run for incremental builds and will copy the results back out of the container. You can specify a different registry/name and version for `kube-cross` by setting `KUBE_CROSS_IMAGE` and `KUBE_CROSS_VERSION`, see [`common.sh`](common.sh) for more details.
 
 The `kube-build` container image is built by first creating a "context" directory in `_output/images/build-image`.  It is done there instead of at the root of the Kubernetes repo to minimize the amount of data we need to package up when building the image.
 

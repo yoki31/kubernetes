@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -34,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"sigs.k8s.io/yaml"
 )
 
@@ -75,6 +75,9 @@ func (ps *patchSet) String() string {
 	)
 }
 
+// KubeletConfiguration defines the kubeletconfiguration patch target.
+const KubeletConfiguration = "kubeletconfiguration"
+
 var (
 	pathLock  = &sync.RWMutex{}
 	pathCache = map[string]*PatchManager{}
@@ -90,7 +93,20 @@ var (
 	knownExtensions  = []string{"json", "yaml"}
 
 	regExtension = regexp.MustCompile(`.+\.(` + strings.Join(knownExtensions, "|") + `)$`)
+
+	knownTargets = []string{
+		kubeadmconstants.Etcd,
+		kubeadmconstants.KubeAPIServer,
+		kubeadmconstants.KubeControllerManager,
+		kubeadmconstants.KubeScheduler,
+		KubeletConfiguration,
+	}
 )
+
+// KnownTargets returns the locally defined knownTargets.
+func KnownTargets() []string {
+	return knownTargets
+}
 
 // GetPatchManagerForPath creates a patch manager that can be used to apply patches to "knownTargets".
 // "path" should contain patches that can be used to patch the "knownTargets".
@@ -104,7 +120,7 @@ func GetPatchManagerForPath(path string, knownTargets []string, output io.Writer
 	pathLock.RUnlock()
 
 	if output == nil {
-		output = ioutil.Discard
+		output = io.Discard
 	}
 
 	fmt.Fprintf(output, "[patches] Reading patches from path %q\n", path)
@@ -316,7 +332,7 @@ func getPatchSetsFromPath(targetPath string, knownTargets []string, output io.Wr
 		}
 
 		// Read the patch file.
-		data, err := ioutil.ReadFile(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return errors.Wrapf(err, "could not read the file %q", path)
 		}

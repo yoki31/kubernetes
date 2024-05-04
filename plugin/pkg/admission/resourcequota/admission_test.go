@@ -28,17 +28,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
+	genericadmissioninitializer "k8s.io/apiserver/pkg/admission/initializer"
 	"k8s.io/apiserver/pkg/admission/plugin/resourcequota"
 	resourcequotaapi "k8s.io/apiserver/pkg/admission/plugin/resourcequota/apis/resourcequota"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	testcore "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	api "k8s.io/kubernetes/pkg/apis/core"
-	"k8s.io/kubernetes/pkg/features"
+	controlplaneadmission "k8s.io/kubernetes/pkg/controlplane/apiserver/admission"
 	"k8s.io/kubernetes/pkg/quota/v1/install"
 )
 
@@ -55,6 +54,13 @@ func getResourceList(cpu, memory string) api.ResourceList {
 
 func getResourceRequirements(requests, limits api.ResourceList) api.ResourceRequirements {
 	res := api.ResourceRequirements{}
+	res.Requests = requests
+	res.Limits = limits
+	return res
+}
+
+func getVolumeResourceRequirements(requests, limits api.ResourceList) api.VolumeResourceRequirements {
+	res := api.VolumeResourceRequirements{}
 	res.Requests = requests
 	res.Limits = limits
 	return res
@@ -83,7 +89,7 @@ func validPodWithPriority(name string, numContainers int, resources api.Resource
 	return pod
 }
 
-func validPersistentVolumeClaim(name string, resources api.ResourceRequirements) *api.PersistentVolumeClaim {
+func validPersistentVolumeClaim(name string, resources api.VolumeResourceRequirements) *api.PersistentVolumeClaim {
 	return &api.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "test"},
 		Spec: api.PersistentVolumeClaimSpec{
@@ -102,15 +108,18 @@ func createHandlerWithConfig(kubeClient kubernetes.Interface, informerFactory in
 	}
 	quotaConfiguration := install.NewQuotaConfigurationForAdmission()
 
-	handler, err := resourcequota.NewResourceQuota(config, 5, stopCh)
+	handler, err := resourcequota.NewResourceQuota(config, 5)
 	if err != nil {
 		return nil, err
 	}
-	handler.SetExternalKubeClientSet(kubeClient)
-	handler.SetExternalKubeInformerFactory(informerFactory)
-	handler.SetQuotaConfiguration(quotaConfiguration)
 
-	return handler, nil
+	initializers := admission.PluginInitializers{
+		genericadmissioninitializer.New(kubeClient, nil, informerFactory, nil, nil, stopCh, nil),
+		controlplaneadmission.NewPluginInitializer(quotaConfiguration, nil),
+	}
+	initializers.Initialize(handler)
+
+	return handler, admission.ValidateInitialization(handler)
 }
 
 // TestAdmissionIgnoresDelete verifies that the admission controller ignores delete operations
@@ -408,8 +417,6 @@ func TestAdmitHandlesNegativePVCUpdates(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExpandPersistentVolumes, true)()
-
 	kubeClient := fake.NewSimpleClientset(resourceQuota)
 	informerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
 
@@ -423,14 +430,14 @@ func TestAdmitHandlesNegativePVCUpdates(t *testing.T) {
 	oldPVC := &api.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-to-update", Namespace: "test", ResourceVersion: "1"},
 		Spec: api.PersistentVolumeClaimSpec{
-			Resources: getResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("10Gi")}, api.ResourceList{}),
+			Resources: getVolumeResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("10Gi")}, api.ResourceList{}),
 		},
 	}
 
 	newPVC := &api.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-to-update", Namespace: "test"},
 		Spec: api.PersistentVolumeClaimSpec{
-			Resources: getResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("5Gi")}, api.ResourceList{}),
+			Resources: getVolumeResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("5Gi")}, api.ResourceList{}),
 		},
 	}
 
@@ -458,8 +465,6 @@ func TestAdmitHandlesPVCUpdates(t *testing.T) {
 		},
 	}
 
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ExpandPersistentVolumes, true)()
-
 	// start up quota system
 	stopCh := make(chan struct{})
 	defer close(stopCh)
@@ -477,14 +482,14 @@ func TestAdmitHandlesPVCUpdates(t *testing.T) {
 	oldPVC := &api.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-to-update", Namespace: "test", ResourceVersion: "1"},
 		Spec: api.PersistentVolumeClaimSpec{
-			Resources: getResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("10Gi")}, api.ResourceList{}),
+			Resources: getVolumeResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("10Gi")}, api.ResourceList{}),
 		},
 	}
 
 	newPVC := &api.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "pvc-to-update", Namespace: "test"},
 		Spec: api.PersistentVolumeClaimSpec{
-			Resources: getResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("15Gi")}, api.ResourceList{}),
+			Resources: getVolumeResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("15Gi")}, api.ResourceList{}),
 		},
 	}
 
@@ -1068,14 +1073,14 @@ func TestAdmitRejectsNegativeUsage(t *testing.T) {
 
 	informerFactory.Core().V1().ResourceQuotas().Informer().GetIndexer().Add(resourceQuota)
 	// verify quota rejects negative pvc storage requests
-	newPvc := validPersistentVolumeClaim("not-allowed-pvc", getResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("-1Gi")}, api.ResourceList{}))
+	newPvc := validPersistentVolumeClaim("not-allowed-pvc", getVolumeResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("-1Gi")}, api.ResourceList{}))
 	err = handler.Validate(context.TODO(), admission.NewAttributesRecord(newPvc, nil, api.Kind("PersistentVolumeClaim").WithVersion("version"), newPvc.Namespace, newPvc.Name, corev1.Resource("persistentvolumeclaims").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil), nil)
 	if err == nil {
 		t.Errorf("Expected an error because the pvc has negative storage usage")
 	}
 
 	// verify quota accepts non-negative pvc storage requests
-	newPvc = validPersistentVolumeClaim("not-allowed-pvc", getResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("1Gi")}, api.ResourceList{}))
+	newPvc = validPersistentVolumeClaim("not-allowed-pvc", getVolumeResourceRequirements(api.ResourceList{api.ResourceStorage: resource.MustParse("1Gi")}, api.ResourceList{}))
 	err = handler.Validate(context.TODO(), admission.NewAttributesRecord(newPvc, nil, api.Kind("PersistentVolumeClaim").WithVersion("version"), newPvc.Namespace, newPvc.Name, corev1.Resource("persistentvolumeclaims").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil), nil)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)

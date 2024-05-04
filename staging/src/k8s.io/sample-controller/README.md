@@ -33,28 +33,11 @@ explained [here](docs/controller-client-go.md).
 
 ## Fetch sample-controller and its dependencies
 
-Like the rest of Kubernetes, sample-controller has used
-[godep](https://github.com/tools/godep) and `$GOPATH` for years and is
-now adopting go 1.11 modules.  There are thus two alternative ways to
-go about fetching this demo and its dependencies.
-
-### Fetch with godep
-
-When NOT using go 1.11 modules, you can use the following commands.
+Issue the following commands --- starting in whatever working directory you
+like.
 
 ```sh
-go get -d k8s.io/sample-controller
-cd $GOPATH/src/k8s.io/sample-controller
-godep restore
-```
-
-### When using go 1.11 modules
-
-When using go 1.11 modules (`GO111MODULE=on`), issue the following
-commands --- starting in whatever working directory you like.
-
-```sh
-git clone https://github.com/kubernetes/sample-controller.git
+git clone https://github.com/kubernetes/sample-controller
 cd sample-controller
 ```
 
@@ -87,7 +70,7 @@ go build -o sample-controller .
 ./sample-controller -kubeconfig=$HOME/.kube/config
 
 # create a CustomResourceDefinition
-kubectl create -f artifacts/examples/crd.yaml
+kubectl create -f artifacts/examples/crd-status-subresource.yaml
 
 # create a custom resource of type Foo
 kubectl create -f artifacts/examples/example-foo.yaml
@@ -125,6 +108,8 @@ type User struct {
 	Password string `json:"password"`
 }
 ```
+
+Note, the JSON tag `json:` is required on all user facing fields within your type. Typically API types contain only user facing fields. When the JSON tag is omitted from the field, Kubernetes generators consider the field to be internal and will not expose the field in their generated external output. For example, this means that the field would not be included in a generated CRD schema.
 
 ## Validation
 

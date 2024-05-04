@@ -17,16 +17,20 @@ limitations under the License.
 package apimachinery
 
 import (
+	"context"
 	"regexp"
 
 	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/kubernetes/test/e2e/framework"
+	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
 )
 
 var _ = SIGDescribe("server version", func() {
 	f := framework.NewDefaultFramework("server-version")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 
 	/*
 	   Release: v1.19
@@ -34,7 +38,7 @@ var _ = SIGDescribe("server version", func() {
 	   Description: Ensure that an API server version can be retrieved.
 	   Both the major and minor versions MUST only be an integer.
 	*/
-	framework.ConformanceIt("should find the server version", func() {
+	framework.ConformanceIt("should find the server version", func(ctx context.Context) {
 
 		ginkgo.By("Request ServerVersion")
 
@@ -44,7 +48,7 @@ var _ = SIGDescribe("server version", func() {
 
 		ginkgo.By("Confirm major version")
 		re := regexp.MustCompile("[1-9]")
-		framework.ExpectEqual(re.FindString(version.Major), version.Major, "unable to find major version")
+		gomega.Expect(re.FindString(version.Major)).To(gomega.Equal(version.Major), "unable to find major version")
 		framework.Logf("Major version: %v", version.Major)
 
 		ginkgo.By("Confirm minor version")
@@ -54,7 +58,7 @@ var _ = SIGDescribe("server version", func() {
 		framework.Logf("cleanMinorVersion: %v", cleanMinorVersion)
 
 		re = regexp.MustCompile("[0-9]+")
-		framework.ExpectEqual(re.FindString(version.Minor), cleanMinorVersion, "unable to find minor version")
+		gomega.Expect(re.FindString(version.Minor)).To(gomega.Equal(cleanMinorVersion), "unable to find minor version")
 		framework.Logf("Minor version: %v", version.Minor)
 	})
 })

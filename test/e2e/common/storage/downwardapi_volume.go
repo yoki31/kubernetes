@@ -17,6 +17,7 @@ limitations under the License.
 package storage
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -26,10 +27,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2epodoutput "k8s.io/kubernetes/test/e2e/framework/pod/output"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
+	"k8s.io/kubernetes/test/e2e/nodefeature"
 	imageutils "k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 )
 
@@ -37,9 +41,10 @@ var _ = SIGDescribe("Downward API volume", func() {
 	// How long to wait for a log pod to be displayed
 	const podLogTimeout = 3 * time.Minute
 	f := framework.NewDefaultFramework("downward-api")
-	var podClient *framework.PodClient
+	f.NamespacePodSecurityLevel = admissionapi.LevelBaseline
+	var podClient *e2epod.PodClient
 	ginkgo.BeforeEach(func() {
-		podClient = f.PodClient()
+		podClient = e2epod.NewPodClient(f)
 	})
 
 	/*
@@ -47,11 +52,11 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, pod name
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the Pod name. The container runtime MUST be able to access Pod name from the specified path on the mounted volume.
 	*/
-	framework.ConformanceIt("should provide podname only [NodeConformance]", func() {
+	framework.ConformanceIt("should provide podname only", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumePodForSimpleTest(podName, "/etc/podinfo/podname")
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			fmt.Sprintf("%s\n", podName),
 		})
 	})
@@ -62,12 +67,12 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Description: A Pod is configured with DownwardAPIVolumeSource with the volumesource mode set to -r-------- and DownwardAPIVolumeFiles contains a item for the Pod name. The container runtime MUST be able to access Pod name from the specified path on the mounted volume.
 		This test is marked LinuxOnly since Windows does not support setting specific file permissions.
 	*/
-	framework.ConformanceIt("should set DefaultMode on files [LinuxOnly] [NodeConformance]", func() {
+	framework.ConformanceIt("should set DefaultMode on files [LinuxOnly]", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		defaultMode := int32(0400)
 		pod := downwardAPIVolumePodForModeTest(podName, "/etc/podinfo/podname", nil, &defaultMode)
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			"mode of file \"/etc/podinfo/podname\": -r--------",
 		})
 	})
@@ -78,17 +83,17 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the Pod name with the file mode set to -r--------. The container runtime MUST be able to access Pod name from the specified path on the mounted volume.
 		This test is marked LinuxOnly since Windows does not support setting specific file permissions.
 	*/
-	framework.ConformanceIt("should set mode on item file [LinuxOnly] [NodeConformance]", func() {
+	framework.ConformanceIt("should set mode on item file [LinuxOnly]", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		mode := int32(0400)
 		pod := downwardAPIVolumePodForModeTest(podName, "/etc/podinfo/podname", &mode, nil)
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			"mode of file \"/etc/podinfo/podname\": -r--------",
 		})
 	})
 
-	ginkgo.It("should provide podname as non-root with fsgroup [LinuxOnly] [NodeFeature:FSGroup]", func() {
+	f.It("should provide podname as non-root with fsgroup [LinuxOnly]", nodefeature.FSGroup, func(ctx context.Context) {
 		// Windows does not support RunAsUser / FSGroup SecurityContext options.
 		e2eskipper.SkipIfNodeOSDistroIs("windows")
 		podName := "metadata-volume-" + string(uuid.NewUUID())
@@ -98,12 +103,12 @@ var _ = SIGDescribe("Downward API volume", func() {
 			FSGroup: &gid,
 		}
 		setPodNonRootUser(pod)
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			fmt.Sprintf("%s\n", podName),
 		})
 	})
 
-	ginkgo.It("should provide podname as non-root with fsgroup and defaultMode [LinuxOnly] [NodeFeature:FSGroup]", func() {
+	f.It("should provide podname as non-root with fsgroup and defaultMode [LinuxOnly]", nodefeature.FSGroup, func(ctx context.Context) {
 		// Windows does not support RunAsUser / FSGroup SecurityContext options, and it does not support setting file permissions.
 		e2eskipper.SkipIfNodeOSDistroIs("windows")
 		podName := "metadata-volume-" + string(uuid.NewUUID())
@@ -114,7 +119,7 @@ var _ = SIGDescribe("Downward API volume", func() {
 			FSGroup: &gid,
 		}
 		setPodNonRootUser(pod)
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			"mode of file \"/etc/podinfo/podname\": -r--r-----",
 		})
 	})
@@ -124,7 +129,7 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, update label
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains list of items for each of the Pod labels. The container runtime MUST be able to access Pod labels from the specified path on the mounted volume. Update the labels by adding a new label to the running Pod. The new label MUST be available from the mounted volume.
 	*/
-	framework.ConformanceIt("should update labels on modification [NodeConformance]", func() {
+	framework.ConformanceIt("should update labels on modification", f.WithNodeConformance(), func(ctx context.Context) {
 		labels := map[string]string{}
 		labels["key1"] = "value1"
 		labels["key2"] = "value2"
@@ -133,20 +138,20 @@ var _ = SIGDescribe("Downward API volume", func() {
 		pod := downwardAPIVolumePodForUpdateTest(podName, labels, map[string]string{}, "/etc/podinfo/labels")
 		containerName := "client-container"
 		ginkgo.By("Creating the pod")
-		podClient.CreateSync(pod)
+		podClient.CreateSync(ctx, pod)
 
-		gomega.Eventually(func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, podName, containerName)
+		gomega.Eventually(ctx, func() (string, error) {
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, podName, containerName)
 		},
 			podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("key1=\"value1\"\n"))
 
 		//modify labels
-		podClient.Update(podName, func(pod *v1.Pod) {
+		podClient.Update(ctx, podName, func(pod *v1.Pod) {
 			pod.Labels["key3"] = "value3"
 		})
 
-		gomega.Eventually(func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, containerName)
+		gomega.Eventually(ctx, func() (string, error) {
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, containerName)
 		},
 			podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("key3=\"value3\"\n"))
 	})
@@ -156,7 +161,7 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, update annotations
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains list of items for each of the Pod annotations. The container runtime MUST be able to access Pod annotations from the specified path on the mounted volume. Update the annotations by adding a new annotation to the running Pod. The new annotation MUST be available from the mounted volume.
 	*/
-	framework.ConformanceIt("should update annotations on modification [NodeConformance]", func() {
+	framework.ConformanceIt("should update annotations on modification", f.WithNodeConformance(), func(ctx context.Context) {
 		annotations := map[string]string{}
 		annotations["builder"] = "bar"
 		podName := "annotationupdate" + string(uuid.NewUUID())
@@ -164,20 +169,20 @@ var _ = SIGDescribe("Downward API volume", func() {
 
 		containerName := "client-container"
 		ginkgo.By("Creating the pod")
-		pod = podClient.CreateSync(pod)
+		pod = podClient.CreateSync(ctx, pod)
 
-		gomega.Eventually(func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, containerName)
+		gomega.Eventually(ctx, func() (string, error) {
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, containerName)
 		},
 			podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("builder=\"bar\"\n"))
 
 		//modify annotations
-		podClient.Update(podName, func(pod *v1.Pod) {
+		podClient.Update(ctx, podName, func(pod *v1.Pod) {
 			pod.Annotations["builder"] = "foo"
 		})
 
-		gomega.Eventually(func() (string, error) {
-			return e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, containerName)
+		gomega.Eventually(ctx, func() (string, error) {
+			return e2epod.GetPodLogs(ctx, f.ClientSet, f.Namespace.Name, pod.Name, containerName)
 		},
 			podLogTimeout, framework.Poll).Should(gomega.ContainSubstring("builder=\"foo\"\n"))
 	})
@@ -187,11 +192,11 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, CPU limits
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the CPU limits. The container runtime MUST be able to access CPU limits from the specified path on the mounted volume.
 	*/
-	framework.ConformanceIt("should provide container's cpu limit [NodeConformance]", func() {
+	framework.ConformanceIt("should provide container's cpu limit", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumeForContainerResources(podName, "/etc/podinfo/cpu_limit")
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			fmt.Sprintf("2\n"),
 		})
 	})
@@ -201,12 +206,12 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, memory limits
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the memory limits. The container runtime MUST be able to access memory limits from the specified path on the mounted volume.
 	*/
-	framework.ConformanceIt("should provide container's memory limit [NodeConformance]", func() {
+	framework.ConformanceIt("should provide container's memory limit", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumeForContainerResources(podName, "/etc/podinfo/memory_limit")
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
-			fmt.Sprintf("67108864\n"),
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
+			"134217728\n",
 		})
 	})
 
@@ -215,11 +220,11 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, CPU request
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the CPU request. The container runtime MUST be able to access CPU request from the specified path on the mounted volume.
 	*/
-	framework.ConformanceIt("should provide container's cpu request [NodeConformance]", func() {
+	framework.ConformanceIt("should provide container's cpu request", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumeForContainerResources(podName, "/etc/podinfo/cpu_request")
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			fmt.Sprintf("1\n"),
 		})
 	})
@@ -229,11 +234,11 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, memory request
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the memory request. The container runtime MUST be able to access memory request from the specified path on the mounted volume.
 	*/
-	framework.ConformanceIt("should provide container's memory request [NodeConformance]", func() {
+	framework.ConformanceIt("should provide container's memory request", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumeForContainerResources(podName, "/etc/podinfo/memory_request")
 
-		f.TestContainerOutput("downward API volume plugin", pod, 0, []string{
+		e2epodoutput.TestContainerOutput(ctx, f, "downward API volume plugin", pod, 0, []string{
 			fmt.Sprintf("33554432\n"),
 		})
 	})
@@ -243,11 +248,11 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, CPU limit, default node allocatable
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the CPU limits. CPU limits is not specified for the container. The container runtime MUST be able to access CPU limits from the specified path on the mounted volume and the value MUST be default node allocatable.
 	*/
-	framework.ConformanceIt("should provide node allocatable (cpu) as default cpu limit if the limit is not set [NodeConformance]", func() {
+	framework.ConformanceIt("should provide node allocatable (cpu) as default cpu limit if the limit is not set", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumeForDefaultContainerResources(podName, "/etc/podinfo/cpu_limit")
 
-		f.TestContainerOutputRegexp("downward API volume plugin", pod, 0, []string{"[1-9]"})
+		e2epodoutput.TestContainerOutputRegexp(ctx, f, "downward API volume plugin", pod, 0, []string{"[1-9]"})
 	})
 
 	/*
@@ -255,11 +260,11 @@ var _ = SIGDescribe("Downward API volume", func() {
 		Testname: DownwardAPI volume, memory limit, default node allocatable
 		Description: A Pod is configured with DownwardAPIVolumeSource and DownwardAPIVolumeFiles contains a item for the memory limits. memory limits is not specified for the container. The container runtime MUST be able to access memory limits from the specified path on the mounted volume and the value MUST be default node allocatable.
 	*/
-	framework.ConformanceIt("should provide node allocatable (memory) as default memory limit if the limit is not set [NodeConformance]", func() {
+	framework.ConformanceIt("should provide node allocatable (memory) as default memory limit if the limit is not set", f.WithNodeConformance(), func(ctx context.Context) {
 		podName := "downwardapi-volume-" + string(uuid.NewUUID())
 		pod := downwardAPIVolumeForDefaultContainerResources(podName, "/etc/podinfo/memory_limit")
 
-		f.TestContainerOutputRegexp("downward API volume plugin", pod, 0, []string{"[1-9]"})
+		e2epodoutput.TestContainerOutputRegexp(ctx, f, "downward API volume plugin", pod, 0, []string{"[1-9]"})
 	})
 })
 
@@ -335,7 +340,7 @@ func downwardAPIVolumeBaseContainers(name, filePath string) []v1.Container {
 				},
 				Limits: v1.ResourceList{
 					v1.ResourceCPU:    resource.MustParse("1250m"),
-					v1.ResourceMemory: resource.MustParse("64Mi"),
+					v1.ResourceMemory: resource.MustParse("128Mi"),
 				},
 			},
 			VolumeMounts: []v1.VolumeMount{

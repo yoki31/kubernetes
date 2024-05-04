@@ -25,8 +25,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/google/cadvisor/container/crio"
 	cadvisorfs "github.com/google/cadvisor/fs"
-	"k8s.io/kubernetes/pkg/kubelet/types"
 )
 
 func TestImageFsInfoLabel(t *testing.T) {
@@ -37,20 +37,12 @@ func TestImageFsInfoLabel(t *testing.T) {
 		expectedLabel   string
 		expectedError   error
 	}{{
-		description:     "LabelDockerImages should be returned",
-		runtime:         types.DockerContainerRuntime,
-		runtimeEndpoint: "",
-		expectedLabel:   cadvisorfs.LabelDockerImages,
-		expectedError:   nil,
-	}, {
 		description:     "LabelCrioImages should be returned",
-		runtime:         types.RemoteContainerRuntime,
-		runtimeEndpoint: CrioSocket,
+		runtimeEndpoint: crio.CrioSocket,
 		expectedLabel:   cadvisorfs.LabelCrioImages,
 		expectedError:   nil,
 	}, {
 		description:     "Cannot find valid imagefs label",
-		runtime:         "invalid-runtime",
 		runtimeEndpoint: "",
 		expectedLabel:   "",
 		expectedError:   fmt.Errorf("no imagefs label for configured runtime"),
@@ -58,8 +50,37 @@ func TestImageFsInfoLabel(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.description, func(t *testing.T) {
-			infoProvider := NewImageFsInfoProvider(tc.runtime, tc.runtimeEndpoint)
+			infoProvider := NewImageFsInfoProvider(tc.runtimeEndpoint)
 			label, err := infoProvider.ImageFsInfoLabel()
+			assert.Equal(t, tc.expectedLabel, label)
+			assert.Equal(t, tc.expectedError, err)
+		})
+	}
+}
+
+func TestContainerFsInfoLabel(t *testing.T) {
+	testcases := []struct {
+		description     string
+		runtime         string
+		runtimeEndpoint string
+		expectedLabel   string
+		expectedError   error
+	}{{
+		description:     "LabelCrioWriteableImages should be returned",
+		runtimeEndpoint: crio.CrioSocket,
+		expectedLabel:   cadvisorfs.LabelCrioContainers,
+		expectedError:   nil,
+	}, {
+		description:     "Cannot find valid imagefs label",
+		runtimeEndpoint: "",
+		expectedLabel:   "",
+		expectedError:   fmt.Errorf("no containerfs label for configured runtime"),
+	}}
+
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			infoProvider := NewImageFsInfoProvider(tc.runtimeEndpoint)
+			label, err := infoProvider.ContainerFsInfoLabel()
 			assert.Equal(t, tc.expectedLabel, label)
 			assert.Equal(t, tc.expectedError, err)
 		})

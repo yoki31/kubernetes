@@ -41,7 +41,6 @@ import (
 	"k8s.io/kubernetes/pkg/printers"
 	printersinternal "k8s.io/kubernetes/pkg/printers/internalversion"
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
-	"k8s.io/kubernetes/pkg/registry/core/service"
 	svcreg "k8s.io/kubernetes/pkg/registry/core/service"
 	"k8s.io/kubernetes/pkg/registry/core/service/ipallocator"
 	"k8s.io/kubernetes/pkg/registry/core/service/portallocator"
@@ -86,30 +85,32 @@ func NewREST(
 	pods PodStorage,
 	proxyTransport http.RoundTripper) (*REST, *StatusREST, *svcreg.ProxyREST, error) {
 
-	strategy, _ := svcreg.StrategyForServiceCIDRs(ipAllocs[serviceIPFamily].CIDR(), len(ipAllocs) > 1)
-
 	store := &genericregistry.Store{
-		NewFunc:                  func() runtime.Object { return &api.Service{} },
-		NewListFunc:              func() runtime.Object { return &api.ServiceList{} },
-		DefaultQualifiedResource: api.Resource("services"),
-		ReturnDeletedObject:      true,
+		NewFunc:                   func() runtime.Object { return &api.Service{} },
+		NewListFunc:               func() runtime.Object { return &api.ServiceList{} },
+		PredicateFunc:             svcreg.Matcher,
+		DefaultQualifiedResource:  api.Resource("services"),
+		SingularQualifiedResource: api.Resource("service"),
+		ReturnDeletedObject:       true,
 
-		CreateStrategy:      strategy,
-		UpdateStrategy:      strategy,
-		DeleteStrategy:      strategy,
-		ResetFieldsStrategy: strategy,
+		CreateStrategy:      svcreg.Strategy,
+		UpdateStrategy:      svcreg.Strategy,
+		DeleteStrategy:      svcreg.Strategy,
+		ResetFieldsStrategy: svcreg.Strategy,
 
 		TableConvertor: printerstorage.TableConvertor{TableGenerator: printers.NewTableGenerator().With(printersinternal.AddHandlers)},
 	}
-	options := &generic.StoreOptions{RESTOptions: optsGetter}
+	options := &generic.StoreOptions{
+		RESTOptions: optsGetter,
+		AttrFunc:    svcreg.GetAttrs,
+	}
 	if err := store.CompleteWithOptions(options); err != nil {
 		return nil, nil, nil, err
 	}
 
 	statusStore := *store
-	statusStrategy := service.NewServiceStatusStrategy(strategy)
-	statusStore.UpdateStrategy = statusStrategy
-	statusStore.ResetFieldsStrategy = statusStrategy
+	statusStore.UpdateStrategy = svcreg.StatusStrategy
+	statusStore.ResetFieldsStrategy = svcreg.StatusStrategy
 
 	var primaryIPFamily api.IPFamily = serviceIPFamily
 	var secondaryIPFamily api.IPFamily = "" // sentinel value
@@ -129,6 +130,11 @@ func NewREST(
 	store.AfterDelete = genericStore.afterDelete
 	store.BeginCreate = genericStore.beginCreate
 	store.BeginUpdate = genericStore.beginUpdate
+
+	// users can patch the status to remove the finalizer,
+	// hence statusStore must participate on the AfterDelete
+	// hook to release the allocated resources
+	statusStore.AfterDelete = genericStore.afterDelete
 
 	return genericStore, &StatusREST{store: &statusStore}, &svcreg.ProxyREST{Redirector: genericStore, ProxyTransport: proxyTransport}, nil
 }
@@ -157,6 +163,12 @@ func (r *REST) Categories() []string {
 	return []string{"all"}
 }
 
+// Destroy cleans up everything on shutdown.
+func (r *REST) Destroy() {
+	r.Store.Destroy()
+	r.alloc.Destroy()
+}
+
 // StatusREST implements the REST endpoint for changing the status of a service.
 type StatusREST struct {
 	store *genericregistry.Store
@@ -164,6 +176,12 @@ type StatusREST struct {
 
 func (r *StatusREST) New() runtime.Object {
 	return &api.Service{}
+}
+
+// Destroy cleans up resources on shutdown.
+func (r *StatusREST) Destroy() {
+	// Given that underlying store is shared with REST,
+	// we don't destroy it here explicitly.
 }
 
 // Get retrieves the object from the storage. It is required to support Patch.
@@ -176,6 +194,10 @@ func (r *StatusREST) Update(ctx context.Context, name string, objInfo rest.Updat
 	// We are explicitly setting forceAllowCreate to false in the call to the underlying storage because
 	// subresources should never allow create on update.
 	return r.store.Update(ctx, name, objInfo, createValidation, updateValidation, false, options)
+}
+
+func (r *StatusREST) ConvertToTable(ctx context.Context, object runtime.Object, tableOptions runtime.Object) (*metav1.Table, error) {
+	return r.store.ConvertToTable(ctx, object, tableOptions)
 }
 
 // GetResetFields implements rest.ResetFieldsStrategy
@@ -367,6 +389,11 @@ func (r *REST) beginUpdate(ctx context.Context, obj, oldObj runtime.Object, opti
 	newSvc := obj.(*api.Service)
 	oldSvc := oldObj.(*api.Service)
 
+	// Make sure the existing object has all fields we expect to be defaulted.
+	// This might not be true if the saved object predates these fields (the
+	// Decorator hook is not called on 'old' in the update path.
+	r.defaultOnReadService(oldSvc)
+
 	// Fix up allocated values that the client may have not specified (for
 	// idempotence).
 	patchAllocatedValues(After{newSvc}, Before{oldSvc})
@@ -447,7 +474,7 @@ func (r *REST) ResourceLocation(ctx context.Context, id string) (*url.URL, http.
 				// but in the expected case we'll only make one.
 				for try := 0; try < len(ss.Addresses); try++ {
 					addr := ss.Addresses[(addrSeed+try)%len(ss.Addresses)]
-					// TODO(thockin): do we really need this check?
+					// We only proxy to addresses that are actually pods.
 					if err := isValidAddress(ctx, &addr, r.pods); err != nil {
 						utilruntime.HandleError(fmt.Errorf("Address %v isn't valid (%v)", addr, err))
 						continue
@@ -625,7 +652,11 @@ func needsClusterIP(svc *api.Service) bool {
 }
 
 func needsNodePort(svc *api.Service) bool {
-	if svc.Spec.Type == api.ServiceTypeNodePort || svc.Spec.Type == api.ServiceTypeLoadBalancer {
+	if svc.Spec.Type == api.ServiceTypeNodePort {
+		return true
+	}
+	if svc.Spec.Type == api.ServiceTypeLoadBalancer &&
+		(svc.Spec.AllocateLoadBalancerNodePorts == nil || *svc.Spec.AllocateLoadBalancerNodePorts) {
 		return true
 	}
 	return false
@@ -635,7 +666,7 @@ func needsHCNodePort(svc *api.Service) bool {
 	if svc.Spec.Type != api.ServiceTypeLoadBalancer {
 		return false
 	}
-	if svc.Spec.ExternalTrafficPolicy != api.ServiceExternalTrafficPolicyTypeLocal {
+	if svc.Spec.ExternalTrafficPolicy != api.ServiceExternalTrafficPolicyLocal {
 		return false
 	}
 	return true

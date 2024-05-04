@@ -19,14 +19,14 @@ package dryrun
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	errorsutil "k8s.io/apimachinery/pkg/util/errors"
 
-	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
+	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
 )
@@ -61,7 +61,7 @@ func PrintDryRunFiles(files []FileToPrint, w io.Writer) error {
 			continue
 		}
 
-		fileBytes, err := ioutil.ReadFile(file.RealPath)
+		fileBytes, err := os.ReadFile(file.RealPath)
 		if err != nil {
 			errs = append(errs, err)
 			continue
@@ -89,6 +89,11 @@ func NewWaiter() apiclient.Waiter {
 	return &Waiter{}
 }
 
+// WaitForControlPlaneComponents just returns a dummy nil, to indicate that the program should just proceed
+func (w *Waiter) WaitForControlPlaneComponents(cfg *kubeadmapi.ClusterConfiguration) error {
+	return nil
+}
+
 // WaitForAPI just returns a dummy nil, to indicate that the program should just proceed
 func (w *Waiter) WaitForAPI() error {
 	fmt.Println("[dryrun] Would wait for the API Server's /healthz endpoint to return 'ok'")
@@ -107,14 +112,9 @@ func (w *Waiter) WaitForPodToDisappear(podName string) error {
 	return nil
 }
 
-// WaitForHealthyKubelet blocks until the kubelet /healthz endpoint returns 'ok'
-func (w *Waiter) WaitForHealthyKubelet(_ time.Duration, healthzEndpoint string) error {
-	fmt.Printf("[dryrun] Would make sure the kubelet %q endpoint is healthy\n", healthzEndpoint)
-	return nil
-}
-
-// WaitForKubeletAndFunc is a wrapper for WaitForHealthyKubelet that also blocks for a function
-func (w *Waiter) WaitForKubeletAndFunc(f func() error) error {
+// WaitForKubelet blocks until the kubelet /healthz endpoint returns 'ok'
+func (w *Waiter) WaitForKubelet() error {
+	fmt.Println("[dryrun] Would make sure the kubelet's /healthz endpoint is healthy")
 	return nil
 }
 
@@ -124,9 +124,9 @@ func (w *Waiter) SetTimeout(_ time.Duration) {}
 // WaitForStaticPodControlPlaneHashes returns an empty hash for all control plane images;
 func (w *Waiter) WaitForStaticPodControlPlaneHashes(_ string) (map[string]string, error) {
 	return map[string]string{
-		constants.KubeAPIServer:         "",
-		constants.KubeControllerManager: "",
-		constants.KubeScheduler:         "",
+		kubeadmconstants.KubeAPIServer:         "",
+		kubeadmconstants.KubeControllerManager: "",
+		kubeadmconstants.KubeScheduler:         "",
 	}, nil
 }
 

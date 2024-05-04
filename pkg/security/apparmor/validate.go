@@ -17,11 +17,8 @@ limitations under the License.
 package apparmor
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
-	"os"
-	"path"
 	"strings"
 
 	"github.com/opencontainers/runc/libcontainer/apparmor"
@@ -29,8 +26,6 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/features"
-	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
-	utilpath "k8s.io/utils/path"
 )
 
 // Whether AppArmor should be disabled by default.
@@ -44,24 +39,15 @@ type Validator interface {
 }
 
 // NewValidator is in order to find AppArmor FS
-func NewValidator(runtime string) Validator {
-	if err := validateHost(runtime); err != nil {
+func NewValidator() Validator {
+	if err := validateHost(); err != nil {
 		return &validator{validateHostErr: err}
 	}
-	appArmorFS, err := getAppArmorFS()
-	if err != nil {
-		return &validator{
-			validateHostErr: fmt.Errorf("error finding AppArmor FS: %v", err),
-		}
-	}
-	return &validator{
-		appArmorFS: appArmorFS,
-	}
+	return &validator{}
 }
 
 type validator struct {
 	validateHostErr error
-	appArmorFS      string
 }
 
 func (v *validator) Validate(pod *v1.Pod) error {
@@ -75,9 +61,18 @@ func (v *validator) Validate(pod *v1.Pod) error {
 
 	var retErr error
 	podutil.VisitContainers(&pod.Spec, podutil.AllContainers, func(container *v1.Container, containerType podutil.ContainerType) bool {
-		retErr = ValidateProfileFormat(GetProfileName(pod, container.Name))
-		if retErr != nil {
-			return false
+		profile := GetProfile(pod, container)
+		if profile == nil {
+			return true
+		}
+
+		// TODO(#64841): This would ideally be part of validation.ValidateAppArmorProfileFormat, but
+		// that is called for API validation, and this is tightening validation.
+		if profile.Type == v1.AppArmorProfileTypeLocalhost {
+			if profile.LocalhostProfile == nil || strings.TrimSpace(*profile.LocalhostProfile) == "" {
+				retErr = fmt.Errorf("invalid empty AppArmor profile name: %q", profile)
+				return false
+			}
 		}
 		return true
 	})
@@ -85,12 +80,15 @@ func (v *validator) Validate(pod *v1.Pod) error {
 	return retErr
 }
 
+// ValidateHost verifies that the host and runtime is capable of enforcing AppArmor profiles.
+// Note, this is intentionally only check the host at kubelet startup and never re-evaluates the host
+// as the expectation is that the kubelet restart will be needed to enable or disable AppArmor support.
 func (v *validator) ValidateHost() error {
 	return v.validateHostErr
 }
 
-// Verify that the host and runtime is capable of enforcing AppArmor profiles.
-func validateHost(runtime string) error {
+// validateHost verifies that the host and runtime is capable of enforcing AppArmor profiles.
+func validateHost() error {
 	// Check feature-gates
 	if !utilfeature.DefaultFeatureGate.Enabled(features.AppArmor) {
 		return errors.New("AppArmor disabled by feature-gate")
@@ -106,54 +104,5 @@ func validateHost(runtime string) error {
 		return errors.New("AppArmor is not enabled on the host")
 	}
 
-	// Check runtime support. Currently only Docker is supported.
-	if runtime != kubetypes.DockerContainerRuntime && runtime != kubetypes.RemoteContainerRuntime {
-		return fmt.Errorf("AppArmor is only enabled for 'docker' and 'remote' runtimes. Found: %q", runtime)
-	}
-
 	return nil
-}
-
-// ValidateProfileFormat checks the format of the profile.
-func ValidateProfileFormat(profile string) error {
-	if profile == "" || profile == v1.AppArmorBetaProfileRuntimeDefault || profile == v1.AppArmorBetaProfileNameUnconfined {
-		return nil
-	}
-	if !strings.HasPrefix(profile, v1.AppArmorBetaProfileNamePrefix) {
-		return fmt.Errorf("invalid AppArmor profile name: %q", profile)
-	}
-	return nil
-}
-
-func getAppArmorFS() (string, error) {
-	mountsFile, err := os.Open("/proc/mounts")
-	if err != nil {
-		return "", fmt.Errorf("could not open /proc/mounts: %v", err)
-	}
-	defer mountsFile.Close()
-
-	scanner := bufio.NewScanner(mountsFile)
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) < 3 {
-			// Unknown line format; skip it.
-			continue
-		}
-		if fields[2] == "securityfs" {
-			appArmorFS := path.Join(fields[1], "apparmor")
-			if ok, err := utilpath.Exists(utilpath.CheckFollowSymlink, appArmorFS); !ok {
-				msg := fmt.Sprintf("path %s does not exist", appArmorFS)
-				if err != nil {
-					return "", fmt.Errorf("%s: %v", msg, err)
-				}
-				return "", errors.New(msg)
-			}
-			return appArmorFS, nil
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("error scanning mounts: %v", err)
-	}
-
-	return "", errors.New("securityfs not found")
 }

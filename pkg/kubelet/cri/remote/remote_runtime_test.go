@@ -17,16 +17,21 @@ limitations under the License.
 package remote
 
 import (
+	"context"
 	"os"
 	"testing"
 	"time"
+
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	internalapi "k8s.io/cri-api/pkg/apis"
 	apitest "k8s.io/cri-api/pkg/apis/testing"
 	fakeremote "k8s.io/kubernetes/pkg/kubelet/cri/remote/fake"
-	"k8s.io/kubernetes/pkg/kubelet/cri/remote/util"
+	"k8s.io/kubernetes/pkg/kubelet/util"
 )
 
 const (
@@ -47,10 +52,42 @@ func createAndStartFakeRemoteRuntime(t *testing.T) (*fakeremote.RemoteRuntime, s
 }
 
 func createRemoteRuntimeService(endpoint string, t *testing.T) internalapi.RuntimeService {
-	runtimeService, err := NewRemoteRuntimeService(endpoint, defaultConnectionTimeout)
+	runtimeService, err := NewRemoteRuntimeService(endpoint, defaultConnectionTimeout, oteltrace.NewNoopTracerProvider())
+
 	require.NoError(t, err)
 
 	return runtimeService
+}
+
+func createRemoteRuntimeServiceWithTracerProvider(endpoint string, tp oteltrace.TracerProvider, t *testing.T) internalapi.RuntimeService {
+	runtimeService, err := NewRemoteRuntimeService(endpoint, defaultConnectionTimeout, tp)
+	require.NoError(t, err)
+
+	return runtimeService
+}
+
+func TestGetSpans(t *testing.T) {
+	fakeRuntime, endpoint := createAndStartFakeRemoteRuntime(t)
+	defer func() {
+		fakeRuntime.Stop()
+		// clear endpoint file
+		if addr, _, err := util.GetAddressAndDialer(endpoint); err == nil {
+			if _, err := os.Stat(addr); err == nil {
+				os.Remove(addr)
+			}
+		}
+	}()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+	)
+	ctx := context.Background()
+	rtSvc := createRemoteRuntimeServiceWithTracerProvider(endpoint, tp, t)
+	_, err := rtSvc.Version(ctx, apitest.FakeVersion)
+	require.NoError(t, err)
+	err = tp.ForceFlush(ctx)
+	require.NoError(t, err)
+	assert.NotEmpty(t, exp.GetSpans())
 }
 
 func TestVersion(t *testing.T) {
@@ -65,9 +102,10 @@ func TestVersion(t *testing.T) {
 		}
 	}()
 
-	r := createRemoteRuntimeService(endpoint, t)
-	version, err := r.Version(apitest.FakeVersion)
-	assert.NoError(t, err)
+	ctx := context.Background()
+	rtSvc := createRemoteRuntimeService(endpoint, t)
+	version, err := rtSvc.Version(ctx, apitest.FakeVersion)
+	require.NoError(t, err)
 	assert.Equal(t, apitest.FakeVersion, version.Version)
 	assert.Equal(t, apitest.FakeRuntimeName, version.RuntimeName)
 }

@@ -18,15 +18,16 @@ limitations under the License.
 package stats
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
-	restful "github.com/emicklei/go-restful"
+	restful "github.com/emicklei/go-restful/v3"
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	cadvisorv2 "github.com/google/cadvisor/info/v2"
 	"k8s.io/klog/v2"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
@@ -39,19 +40,24 @@ type Provider interface {
 	// The following stats are provided by either CRI or cAdvisor.
 	//
 	// ListPodStats returns the stats of all the containers managed by pods.
-	ListPodStats() ([]statsapi.PodStats, error)
+	ListPodStats(ctx context.Context) ([]statsapi.PodStats, error)
 	// ListPodStatsAndUpdateCPUNanoCoreUsage updates the cpu nano core usage for
 	// the containers and returns the stats for all the pod-managed containers.
-	ListPodCPUAndMemoryStats() ([]statsapi.PodStats, error)
+	ListPodCPUAndMemoryStats(ctx context.Context) ([]statsapi.PodStats, error)
 	// ListPodStatsAndUpdateCPUNanoCoreUsage returns the stats of all the
 	// containers managed by pods and force update the cpu usageNanoCores.
 	// This is a workaround for CRI runtimes that do not integrate with
 	// cadvisor. See https://github.com/kubernetes/kubernetes/issues/72788
 	// for more details.
-	ListPodStatsAndUpdateCPUNanoCoreUsage() ([]statsapi.PodStats, error)
+	ListPodStatsAndUpdateCPUNanoCoreUsage(ctx context.Context) ([]statsapi.PodStats, error)
 	// ImageFsStats returns the stats of the image filesystem.
-	ImageFsStats() (*statsapi.FsStats, error)
-
+	// Kubelet allows three options for container filesystems
+	// Everything is on node fs (so no image filesystem)
+	// Container storage is on a dedicated disk (imageFs is separate from root)
+	// Container Filesystem is on root and Images are stored on ImageFs
+	// First return parameter is the image filesystem and
+	// second parameter is the container filesystem
+	ImageFsStats(ctx context.Context) (imageFs *statsapi.FsStats, containerFs *statsapi.FsStats, callErr error)
 	// The following stats are provided by cAdvisor.
 	//
 	// GetCgroupStats returns the stats and the networking usage of the cgroup
@@ -63,15 +69,6 @@ type Provider interface {
 	// RootFsStats returns the stats of the node root filesystem.
 	RootFsStats() (*statsapi.FsStats, error)
 
-	// The following stats are provided by cAdvisor for legacy usage.
-	//
-	// GetContainerInfo returns the information of the container with the
-	// containerName managed by the pod with the uid.
-	GetContainerInfo(podFullName string, uid types.UID, containerName string, req *cadvisorapi.ContainerInfoRequest) (*cadvisorapi.ContainerInfo, error)
-	// GetRawContainerInfo returns the information of the container with the
-	// containerName. If subcontainers is true, this function will return the
-	// information of all the sub-containers as well.
-	GetRawContainerInfo(containerName string, req *cadvisorapi.ContainerInfoRequest, subcontainers bool) (map[string]*cadvisorapi.ContainerInfo, error)
 	// GetRequestedContainersInfo returns the information of the container with
 	// the containerName, and with the specified cAdvisor options.
 	GetRequestedContainersInfo(containerName string, options cadvisorv2.RequestOptions) (map[string]*cadvisorapi.ContainerInfo, error)
@@ -140,6 +137,7 @@ func CreateHandlers(rootPath string, provider Provider, summaryProvider SummaryP
 // Handles stats summary requests to /stats/summary
 // If "only_cpu_and_memory" GET param is true then only cpu and memory is returned in response.
 func (h *handler) handleSummary(request *restful.Request, response *restful.Response) {
+	ctx := request.Request.Context()
 	onlyCPUAndMemory := false
 	err := request.Request.ParseForm()
 	if err != nil {
@@ -152,11 +150,11 @@ func (h *handler) handleSummary(request *restful.Request, response *restful.Resp
 	}
 	var summary *statsapi.Summary
 	if onlyCPUAndMemory {
-		summary, err = h.summaryProvider.GetCPUAndMemoryStats()
+		summary, err = h.summaryProvider.GetCPUAndMemoryStats(ctx)
 	} else {
 		// external calls to the summary API use cached stats
 		forceStatsUpdate := false
-		summary, err = h.summaryProvider.Get(forceStatsUpdate)
+		summary, err = h.summaryProvider.Get(ctx, forceStatsUpdate)
 	}
 	if err != nil {
 		handleError(response, "/stats/summary", err)

@@ -41,6 +41,7 @@ import (
 	serviceaccountconfig "k8s.io/kubernetes/pkg/controller/serviceaccount/config"
 	statefulsetconfig "k8s.io/kubernetes/pkg/controller/statefulset/config"
 	ttlafterfinishedconfig "k8s.io/kubernetes/pkg/controller/ttlafterfinished/config"
+	validatingadmissionpolicystatusconfig "k8s.io/kubernetes/pkg/controller/validatingadmissionpolicystatus/config"
 	attachdetachconfig "k8s.io/kubernetes/pkg/controller/volume/attachdetach/config"
 	ephemeralvolumeconfig "k8s.io/kubernetes/pkg/controller/volume/ephemeral/config"
 	persistentvolumeconfig "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/config"
@@ -98,6 +99,8 @@ type KubeControllerManagerConfiguration struct {
 	// CronJobControllerConfiguration holds configuration for CronJobController
 	// related features.
 	CronJobController cronjobconfig.CronJobControllerConfiguration
+	// LegacySATokenCleanerConfiguration holds configuration for LegacySATokenCleaner related features.
+	LegacySATokenCleaner serviceaccountconfig.LegacySATokenCleanerConfiguration
 	// NamespaceControllerConfiguration holds configuration for NamespaceController
 	// related features.
 	NamespaceController namespaceconfig.NamespaceControllerConfiguration
@@ -130,17 +133,11 @@ type KubeControllerManagerConfiguration struct {
 	// TTLAfterFinishedControllerConfiguration holds configuration for
 	// TTLAfterFinishedController related features.
 	TTLAfterFinishedController ttlafterfinishedconfig.TTLAfterFinishedControllerConfiguration
+	// ValidatingAdmissionPolicyStatusControllerConfiguration holds configuration for
+	// ValidatingAdmissionPolicyStatusController related features.
+	ValidatingAdmissionPolicyStatusController validatingadmissionpolicystatusconfig.ValidatingAdmissionPolicyStatusControllerConfiguration
 }
 
 // DeprecatedControllerConfiguration contains elements be deprecated.
 type DeprecatedControllerConfiguration struct {
-	// DEPRECATED: deletingPodsQps is the number of nodes per second on which pods are deleted in
-	// case of node failure.
-	DeletingPodsQPS float32
-	// DEPRECATED: deletingPodsBurst is the number of nodes on which pods are bursty deleted in
-	// case of node failure. For more details look into RateLimiter.
-	DeletingPodsBurst int32
-	// registerRetryCount is the number of retries for initial node registration.
-	// Retry interval equals node-sync-period.
-	RegisterRetryCount int32
 }

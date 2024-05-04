@@ -18,14 +18,16 @@ package patch
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"reflect"
 	"strings"
 
 	jsonpatch "github.com/evanphx/json-patch"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -35,12 +37,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/tools/clientcmd"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
-	"k8s.io/kubectl/pkg/util"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
+	"k8s.io/kubectl/pkg/util/slice"
 	"k8s.io/kubectl/pkg/util/templates"
 )
 
@@ -56,29 +61,31 @@ type PatchOptions struct {
 	ToPrinter   func(string) (printers.ResourcePrinter, error)
 	Recorder    genericclioptions.Recorder
 
-	Local     bool
-	PatchType string
-	Patch     string
-	PatchFile string
+	Local       bool
+	PatchType   string
+	Patch       string
+	PatchFile   string
+	Subresource string
 
 	namespace                    string
 	enforceNamespace             bool
 	dryRunStrategy               cmdutil.DryRunStrategy
-	dryRunVerifier               *resource.DryRunVerifier
 	outputFormat                 string
 	args                         []string
 	builder                      *resource.Builder
 	unstructuredClientForMapping func(mapping *meta.RESTMapping) (resource.RESTClient, error)
 	fieldManager                 string
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var (
 	patchLong = templates.LongDesc(i18n.T(`
 		Update fields of a resource using strategic merge patch, a JSON merge patch, or a JSON patch.
 
-		JSON and YAML formats are accepted.`))
+		JSON and YAML formats are accepted.
+
+		Note: Strategic merge patch is not supported for custom resources.`))
 
 	patchExample = templates.Examples(i18n.T(`
 		# Partially update a node using a strategic merge patch, specifying the patch as JSON
@@ -94,10 +101,15 @@ var (
 		kubectl patch pod valid-pod -p '{"spec":{"containers":[{"name":"kubernetes-serve-hostname","image":"new image"}]}}'
 
 		# Update a container's image using a JSON patch with positional arrays
-		kubectl patch pod valid-pod --type='json' -p='[{"op": "replace", "path": "/spec/containers/0/image", "value":"new image"}]'`))
+		kubectl patch pod valid-pod --type='json' -p='[{"op": "replace", "path": "/spec/containers/0/image", "value":"new image"}]'
+
+		# Update a deployment's replicas through the 'scale' subresource using a merge patch
+		kubectl patch deployment nginx-deployment --subresource='scale' --type='merge' -p '{"spec":{"replicas":2}}'`))
 )
 
-func NewPatchOptions(ioStreams genericclioptions.IOStreams) *PatchOptions {
+var supportedSubresources = []string{"status", "scale"}
+
+func NewPatchOptions(ioStreams genericiooptions.IOStreams) *PatchOptions {
 	return &PatchOptions{
 		RecordFlags: genericclioptions.NewRecordFlags(),
 		Recorder:    genericclioptions.NoopRecorder{},
@@ -106,7 +118,7 @@ func NewPatchOptions(ioStreams genericclioptions.IOStreams) *PatchOptions {
 	}
 }
 
-func NewCmdPatch(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdPatch(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewPatchOptions(ioStreams)
 
 	cmd := &cobra.Command{
@@ -115,7 +127,7 @@ func NewCmdPatch(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 		Short:                 i18n.T("Update fields of a resource"),
 		Long:                  patchLong,
 		Example:               patchExample,
-		ValidArgsFunction:     util.ResourceTypeAndNameCompletionFunc(f),
+		ValidArgsFunction:     completion.ResourceTypeAndNameCompletionFunc(f),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())
@@ -133,6 +145,7 @@ func NewCmdPatch(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 	cmdutil.AddFilenameOptionFlags(cmd, &o.FilenameOptions, "identifying the resource to update")
 	cmd.Flags().BoolVar(&o.Local, "local", o.Local, "If true, patch will operate on the content of the file, not the server-side resource.")
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-patch")
+	cmdutil.AddSubresourceFlags(cmd, &o.Subresource, "If specified, patch will operate on the subresource of the requested object.", supportedSubresources...)
 
 	return cmd
 }
@@ -159,17 +172,12 @@ func (o *PatchOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	}
 
 	o.namespace, o.enforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
+	if err != nil && !(o.Local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	o.args = args
 	o.builder = f.NewBuilder()
 	o.unstructuredClientForMapping = f.UnstructuredClientForMapping
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.dryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 
 	return nil
 }
@@ -192,7 +200,9 @@ func (o *PatchOptions) Validate() error {
 			return fmt.Errorf("--type must be one of %v, not %q", sets.StringKeySet(patchTypes).List(), o.PatchType)
 		}
 	}
-
+	if len(o.Subresource) > 0 && !slice.ContainsString(supportedSubresources, o.Subresource, nil) {
+		return fmt.Errorf("invalid subresource value: %q. Must be one of %v", o.Subresource, supportedSubresources)
+	}
 	return nil
 }
 
@@ -205,7 +215,7 @@ func (o *PatchOptions) RunPatch() error {
 	var patchBytes []byte
 	if len(o.PatchFile) > 0 {
 		var err error
-		patchBytes, err = ioutil.ReadFile(o.PatchFile)
+		patchBytes, err = os.ReadFile(o.PatchFile)
 		if err != nil {
 			return fmt.Errorf("unable to read patch file: %v", err)
 		}
@@ -224,6 +234,7 @@ func (o *PatchOptions) RunPatch() error {
 		LocalParam(o.Local).
 		NamespaceParam(o.namespace).DefaultNamespace().
 		FilenameParam(o.enforceNamespace, &o.FilenameOptions).
+		Subresource(o.Subresource).
 		ResourceTypeOrNameArgs(false, o.args...).
 		Flatten().
 		Do()
@@ -242,11 +253,6 @@ func (o *PatchOptions) RunPatch() error {
 
 		if !o.Local && o.dryRunStrategy != cmdutil.DryRunClient {
 			mapping := info.ResourceMapping()
-			if o.dryRunStrategy == cmdutil.DryRunServer {
-				if err := o.dryRunVerifier.HasSupport(mapping.GroupVersionKind); err != nil {
-					return err
-				}
-			}
 			client, err := o.unstructuredClientForMapping(mapping)
 			if err != nil {
 				return err
@@ -255,9 +261,13 @@ func (o *PatchOptions) RunPatch() error {
 			helper := resource.
 				NewHelper(client, mapping).
 				DryRun(o.dryRunStrategy == cmdutil.DryRunServer).
-				WithFieldManager(o.fieldManager)
+				WithFieldManager(o.fieldManager).
+				WithSubresource(o.Subresource)
 			patchedObj, err := helper.Patch(namespace, name, patchType, patchBytes, nil)
 			if err != nil {
+				if apierrors.IsUnsupportedMediaType(err) {
+					return errors.Wrap(err, fmt.Sprintf("%s is not supported by %s", patchType, mapping.GroupVersionKind))
+				}
 				return err
 			}
 

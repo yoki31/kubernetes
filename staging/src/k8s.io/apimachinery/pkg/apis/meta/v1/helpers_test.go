@@ -22,10 +22,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/gofuzz"
+	"github.com/google/go-cmp/cmp"
+	fuzz "github.com/google/gofuzz"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/diff"
 )
 
 func TestLabelSelectorAsSelector(t *testing.T) {
@@ -205,14 +205,13 @@ func TestResetObjectMetaForStatus(t *testing.T) {
 	existingMeta.SetUID(types.UID(""))
 	existingMeta.SetName("")
 	existingMeta.SetNamespace("")
-	existingMeta.SetClusterName("")
 	existingMeta.SetCreationTimestamp(Time{})
 	existingMeta.SetDeletionTimestamp(nil)
 	existingMeta.SetDeletionGracePeriodSeconds(nil)
 	existingMeta.SetManagedFields(nil)
 
 	if !reflect.DeepEqual(meta, existingMeta) {
-		t.Error(diff.ObjectDiff(meta, existingMeta))
+		t.Error(cmp.Diff(meta, existingMeta))
 	}
 }
 

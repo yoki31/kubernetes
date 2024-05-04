@@ -18,7 +18,7 @@ package kubelet
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"syscall"
 
@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
+	"k8s.io/kubernetes/pkg/kubelet/metrics"
 	"k8s.io/kubernetes/pkg/util/removeall"
 	"k8s.io/kubernetes/pkg/volume"
 	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
@@ -115,14 +116,15 @@ func (kl *Kubelet) newVolumeMounterFromPlugins(spec *volume.Spec, pod *v1.Pod, o
 // removeOrphanedPodVolumeDirs attempts to remove the pod volumes directory and
 // its subdirectories. There should be no files left under normal conditions
 // when this is called, so it effectively does a recursive rmdir instead of
-// RemoveAll to ensure it only removes directories and not regular files.
+// RemoveAll to ensure it only removes empty directories and files that were
+// used as mount points, but not content of the mount points.
 func (kl *Kubelet) removeOrphanedPodVolumeDirs(uid types.UID) []error {
 	orphanVolumeErrors := []error{}
 
 	// If there are still volume directories, attempt to rmdir them
 	volumePaths, err := kl.getPodVolumePathListFromDisk(uid)
 	if err != nil {
-		orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred during reading volume dir from disk", uid, err))
+		orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error occurred during reading volume dir from disk: %v", uid, err))
 		return orphanVolumeErrors
 	}
 	if len(volumePaths) > 0 {
@@ -135,15 +137,16 @@ func (kl *Kubelet) removeOrphanedPodVolumeDirs(uid types.UID) []error {
 		}
 	}
 
-	// If there are any volume-subpaths, attempt to rmdir them
+	// If there are any volume-subpaths, attempt to remove them
 	subpathVolumePaths, err := kl.getPodVolumeSubpathListFromDisk(uid)
 	if err != nil {
-		orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred during reading of volume-subpaths dir from disk", uid, err))
+		orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error occurred during reading of volume-subpaths dir from disk: %v", uid, err))
 		return orphanVolumeErrors
 	}
 	if len(subpathVolumePaths) > 0 {
 		for _, subpathVolumePath := range subpathVolumePaths {
-			if err := syscall.Rmdir(subpathVolumePath); err != nil {
+			// Remove both files and empty directories here, as the subpath may have been a bind-mount of a file or a directory.
+			if err := os.Remove(subpathVolumePath); err != nil {
 				orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but failed to rmdir() subpath at path %v: %v", uid, subpathVolumePath, err))
 			} else {
 				klog.InfoS("Cleaned up orphaned volume subpath from pod", "podUID", uid, "path", subpathVolumePath)
@@ -155,7 +158,7 @@ func (kl *Kubelet) removeOrphanedPodVolumeDirs(uid types.UID) []error {
 	// Fail if any regular files are encountered.
 	podVolDir := kl.getPodVolumesDir(uid)
 	if err := removeall.RemoveDirsOneFilesystem(kl.mounter, podVolDir); err != nil {
-		orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred when trying to remove the volumes dir", uid, err))
+		orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error occurred when trying to remove the volumes dir: %v", uid, err))
 	} else {
 		klog.InfoS("Cleaned up orphaned pod volumes dir", "podUID", uid, "path", podVolDir)
 	}
@@ -181,16 +184,21 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 
 	orphanRemovalErrors := []error{}
 	orphanVolumeErrors := []error{}
+	var totalPods, errorPods int
 
 	for _, uid := range found {
 		if allPods.Has(string(uid)) {
 			continue
 		}
+
+		totalPods++
+
 		// If volumes have not been unmounted/detached, do not delete directory.
 		// Doing so may result in corruption of data.
 		// TODO: getMountedVolumePathListFromDisk() call may be redundant with
 		// kl.getPodVolumePathListFromDisk(). Can this be cleaned up?
 		if podVolumesExist := kl.podVolumesExist(uid); podVolumesExist {
+			errorPods++
 			klog.V(3).InfoS("Orphaned pod found, but volumes are not cleaned up", "podUID", uid)
 			continue
 		}
@@ -198,6 +206,7 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 		// Attempt to remove the pod volumes directory and its subdirs
 		podVolumeErrors := kl.removeOrphanedPodVolumeDirs(uid)
 		if len(podVolumeErrors) > 0 {
+			errorPods++
 			orphanVolumeErrors = append(orphanVolumeErrors, podVolumeErrors...)
 			// Not all volumes were removed, so don't clean up the pod directory yet. It is likely
 			// that there are still mountpoints or files left which could cause removal of the pod
@@ -209,12 +218,15 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 
 		// Call RemoveAllOneFilesystem for remaining subdirs under the pod directory
 		podDir := kl.getPodDir(uid)
-		podSubdirs, err := ioutil.ReadDir(podDir)
+		podSubdirs, err := os.ReadDir(podDir)
 		if err != nil {
+			errorPods++
 			klog.ErrorS(err, "Could not read directory", "path", podDir)
-			orphanRemovalErrors = append(orphanRemovalErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred during reading the pod dir from disk", uid, err))
+			orphanRemovalErrors = append(orphanRemovalErrors, fmt.Errorf("orphaned pod %q found, but error occurred during reading the pod dir from disk: %v", uid, err))
 			continue
 		}
+
+		var cleanupFailed bool
 		for _, podSubdir := range podSubdirs {
 			podSubdirName := podSubdir.Name()
 			podSubdirPath := filepath.Join(podDir, podSubdirName)
@@ -222,21 +234,27 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 			// as this could lead to data loss in some situations. The volumes
 			// directory should have been removed by removeOrphanedPodVolumeDirs.
 			if podSubdirName == "volumes" {
+				cleanupFailed = true
 				err := fmt.Errorf("volumes subdir was found after it was removed")
 				klog.ErrorS(err, "Orphaned pod found, but failed to remove volumes subdir", "podUID", uid, "path", podSubdirPath)
 				continue
 			}
 			if err := removeall.RemoveAllOneFilesystem(kl.mounter, podSubdirPath); err != nil {
+				cleanupFailed = true
 				klog.ErrorS(err, "Failed to remove orphaned pod subdir", "podUID", uid, "path", podSubdirPath)
-				orphanRemovalErrors = append(orphanRemovalErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred when trying to remove subdir %q", uid, err, podSubdirPath))
+				orphanRemovalErrors = append(orphanRemovalErrors, fmt.Errorf("orphaned pod %q found, but error occurred when trying to remove subdir %q: %v", uid, podSubdirPath, err))
 			}
 		}
 
 		// Rmdir the pod dir, which should be empty if everything above was successful
 		klog.V(3).InfoS("Orphaned pod found, removing", "podUID", uid)
 		if err := syscall.Rmdir(podDir); err != nil {
+			cleanupFailed = true
 			klog.ErrorS(err, "Failed to remove orphaned pod dir", "podUID", uid)
-			orphanRemovalErrors = append(orphanRemovalErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred when trying to remove the pod directory", uid, err))
+			orphanRemovalErrors = append(orphanRemovalErrors, fmt.Errorf("orphaned pod %q found, but error occurred when trying to remove the pod directory: %v", uid, err))
+		}
+		if cleanupFailed {
+			errorPods++
 		}
 	}
 
@@ -250,5 +268,7 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 	}
 	logSpew(orphanVolumeErrors)
 	logSpew(orphanRemovalErrors)
+	metrics.OrphanPodCleanedVolumes.Set(float64(totalPods))
+	metrics.OrphanPodCleanedVolumesErrors.Set(float64(errorPods))
 	return utilerrors.NewAggregate(orphanRemovalErrors)
 }

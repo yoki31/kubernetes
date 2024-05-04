@@ -22,24 +22,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/apiserver/pkg/authentication/user"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	certapi "k8s.io/kubernetes/pkg/apis/certificates"
-	"k8s.io/kubernetes/pkg/features"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestStrategyCreate(t *testing.T) {
 	tests := map[string]struct {
-		ctx                context.Context
-		disableFeatureGate bool
-		obj                runtime.Object
-		expectedObj        runtime.Object
+		ctx         context.Context
+		obj         runtime.Object
+		expectedObj runtime.Object
 	}{
 		"no user in context, no user in obj": {
 			ctx: genericapirequest.NewContext(),
@@ -119,31 +115,16 @@ func TestStrategyCreate(t *testing.T) {
 				Status: certapi.CertificateSigningRequestStatus{Conditions: []certapi.CertificateSigningRequestCondition{}},
 			},
 		},
-		"expirationSeconds set with gate enabled": {
+		"expirationSeconds set": {
 			ctx: genericapirequest.NewContext(),
 			obj: &certapi.CertificateSigningRequest{
 				Spec: certapi.CertificateSigningRequestSpec{
-					ExpirationSeconds: pointer.Int32(1234),
+					ExpirationSeconds: ptr.To[int32](1234),
 				},
 			},
 			expectedObj: &certapi.CertificateSigningRequest{
 				Spec: certapi.CertificateSigningRequestSpec{
-					ExpirationSeconds: pointer.Int32(1234),
-				},
-				Status: certapi.CertificateSigningRequestStatus{Conditions: []certapi.CertificateSigningRequestCondition{}},
-			},
-		},
-		"expirationSeconds set with gate disabled": {
-			ctx:                genericapirequest.NewContext(),
-			disableFeatureGate: true,
-			obj: &certapi.CertificateSigningRequest{
-				Spec: certapi.CertificateSigningRequestSpec{
-					ExpirationSeconds: pointer.Int32(5678),
-				},
-			},
-			expectedObj: &certapi.CertificateSigningRequest{
-				Spec: certapi.CertificateSigningRequestSpec{
-					ExpirationSeconds: nil,
+					ExpirationSeconds: ptr.To[int32](1234),
 				},
 				Status: certapi.CertificateSigningRequestStatus{Conditions: []certapi.CertificateSigningRequestCondition{}},
 			},
@@ -153,13 +134,10 @@ func TestStrategyCreate(t *testing.T) {
 	for k, tc := range tests {
 		tc := tc
 		t.Run(k, func(t *testing.T) {
-			if tc.disableFeatureGate {
-				defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSRDuration, false)()
-			}
 			obj := tc.obj
 			Strategy.PrepareForCreate(tc.ctx, obj)
 			if !reflect.DeepEqual(obj, tc.expectedObj) {
-				t.Errorf("object diff: %s", diff.ObjectDiff(obj, tc.expectedObj))
+				t.Errorf("object diff: %s", cmp.Diff(obj, tc.expectedObj))
 			}
 		})
 	}
@@ -247,7 +225,7 @@ func TestStatusUpdate(t *testing.T) {
 			obj := tt.newObj.DeepCopy()
 			StatusStrategy.PrepareForUpdate(context.TODO(), obj, tt.oldObj.DeepCopy())
 			if !reflect.DeepEqual(obj, tt.expectedObj) {
-				t.Errorf("object diff: %s", diff.ObjectDiff(obj, tt.expectedObj))
+				t.Errorf("object diff: %s", cmp.Diff(obj, tt.expectedObj))
 			}
 		})
 	}

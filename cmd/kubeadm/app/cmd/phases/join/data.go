@@ -14,6 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package phases includes command line phases for kubeadm join
 package phases
 
 import (
@@ -33,8 +34,8 @@ type JoinData interface {
 	Cfg() *kubeadmapi.JoinConfiguration
 	TLSBootstrapCfg() (*clientcmdapi.Config, error)
 	InitCfg() (*kubeadmapi.InitConfiguration, error)
-	ClientSet() (*clientset.Clientset, error)
-	IgnorePreflightErrors() sets.String
+	Client() (clientset.Interface, error)
+	IgnorePreflightErrors() sets.Set[string]
 	OutputWriter() io.Writer
 	PatchesDir() string
 	DryRun() bool

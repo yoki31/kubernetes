@@ -21,13 +21,17 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/component-helpers/scheduling/corev1/nodeaffinity"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/validation"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
+	"k8s.io/kubernetes/pkg/scheduler/util"
 )
 
 // NodeAffinity is a plugin that checks if a pod node selector matches the node label.
@@ -58,6 +62,9 @@ const (
 
 	// errReasonEnforced is the reason for added node affinity not matching.
 	errReasonEnforced = "node(s) didn't match scheduler-enforced node affinity"
+
+	// errReasonConflict is the reason for pod's conflicting affinity rules.
+	errReasonConflict = "pod affinity terms conflict"
 )
 
 // Name returns name of the plugin. It is used in logs, etc.
@@ -76,17 +83,93 @@ func (s *preFilterState) Clone() framework.StateData {
 
 // EventsToRegister returns the possible events that may make a Pod
 // failed by this plugin schedulable.
-func (pl *NodeAffinity) EventsToRegister() []framework.ClusterEvent {
-	return []framework.ClusterEvent{
-		{Resource: framework.Node, ActionType: framework.Add | framework.UpdateNodeLabel},
+func (pl *NodeAffinity) EventsToRegister() []framework.ClusterEventWithHint {
+	return []framework.ClusterEventWithHint{
+		{Event: framework.ClusterEvent{Resource: framework.Node, ActionType: framework.Add | framework.Update}, QueueingHintFn: pl.isSchedulableAfterNodeChange},
 	}
 }
 
+// isSchedulableAfterNodeChange is invoked whenever a node changed. It checks whether
+// that change made a previously unschedulable pod schedulable.
+func (pl *NodeAffinity) isSchedulableAfterNodeChange(logger klog.Logger, pod *v1.Pod, oldObj, newObj interface{}) (framework.QueueingHint, error) {
+	_, modifiedNode, err := util.As[*v1.Node](oldObj, newObj)
+	if err != nil {
+		return framework.Queue, err
+	}
+
+	if pl.addedNodeSelector != nil && !pl.addedNodeSelector.Match(modifiedNode) {
+		logger.V(4).Info("added or modified node didn't match scheduler-enforced node affinity and this event won't make the Pod schedulable", "pod", klog.KObj(pod), "node", klog.KObj(modifiedNode))
+		return framework.QueueSkip, nil
+	}
+
+	requiredNodeAffinity := nodeaffinity.GetRequiredNodeAffinity(pod)
+	isMatched, err := requiredNodeAffinity.Match(modifiedNode)
+	if err != nil {
+		return framework.Queue, err
+	}
+	if isMatched {
+		logger.V(4).Info("node was created or updated, and matches with the pod's NodeAffinity", "pod", klog.KObj(pod), "node", klog.KObj(modifiedNode))
+		return framework.Queue, nil
+	}
+
+	// TODO: also check if the original node meets the pod's requestments once preCheck is completely removed.
+	// See: https://github.com/kubernetes/kubernetes/issues/110175
+
+	logger.V(4).Info("node was created or updated, but it doesn't make this pod schedulable", "pod", klog.KObj(pod), "node", klog.KObj(modifiedNode))
+	return framework.QueueSkip, nil
+}
+
 // PreFilter builds and writes cycle state used by Filter.
-func (pl *NodeAffinity) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) *framework.Status {
+func (pl *NodeAffinity) PreFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod) (*framework.PreFilterResult, *framework.Status) {
+	affinity := pod.Spec.Affinity
+	noNodeAffinity := (affinity == nil ||
+		affinity.NodeAffinity == nil ||
+		affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil)
+	if noNodeAffinity && pl.addedNodeSelector == nil && pod.Spec.NodeSelector == nil {
+		// NodeAffinity Filter has nothing to do with the Pod.
+		return nil, framework.NewStatus(framework.Skip)
+	}
+
 	state := &preFilterState{requiredNodeSelectorAndAffinity: nodeaffinity.GetRequiredNodeAffinity(pod)}
 	cycleState.Write(preFilterStateKey, state)
-	return nil
+
+	if noNodeAffinity || len(affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms) == 0 {
+		return nil, nil
+	}
+
+	// Check if there is affinity to a specific node and return it.
+	terms := affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+	var nodeNames sets.Set[string]
+	for _, t := range terms {
+		var termNodeNames sets.Set[string]
+		for _, r := range t.MatchFields {
+			if r.Key == metav1.ObjectNameField && r.Operator == v1.NodeSelectorOpIn {
+				// The requirements represent ANDed constraints, and so we need to
+				// find the intersection of nodes.
+				s := sets.New(r.Values...)
+				if termNodeNames == nil {
+					termNodeNames = s
+				} else {
+					termNodeNames = termNodeNames.Intersection(s)
+				}
+			}
+		}
+		if termNodeNames == nil {
+			// If this term has no node.Name field affinity,
+			// then all nodes are eligible because the terms are ORed.
+			return nil, nil
+		}
+		nodeNames = nodeNames.Union(termNodeNames)
+	}
+	// If nodeNames is not nil, but length is 0, it means each term have conflicting affinity to node.Name;
+	// therefore, pod will not match any node.
+	if nodeNames != nil && len(nodeNames) == 0 {
+		return nil, framework.NewStatus(framework.UnschedulableAndUnresolvable, errReasonConflict)
+	} else if len(nodeNames) > 0 {
+		return &framework.PreFilterResult{NodeNames: nodeNames}, nil
+	}
+	return nil, nil
+
 }
 
 // PreFilterExtensions not necessary for this plugin as state doesn't depend on pod additions or deletions.
@@ -98,9 +181,7 @@ func (pl *NodeAffinity) PreFilterExtensions() framework.PreFilterExtensions {
 // the plugin's added affinity.
 func (pl *NodeAffinity) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
 	node := nodeInfo.Node()
-	if node == nil {
-		return framework.NewStatus(framework.Error, "node not found")
-	}
+
 	if pl.addedNodeSelector != nil && !pl.addedNodeSelector.Match(node) {
 		return framework.NewStatus(framework.UnschedulableAndUnresolvable, errReasonEnforced)
 	}
@@ -133,13 +214,17 @@ func (s *preScoreState) Clone() framework.StateData {
 }
 
 // PreScore builds and writes cycle state used by Score and NormalizeScore.
-func (pl *NodeAffinity) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*v1.Node) *framework.Status {
+func (pl *NodeAffinity) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*framework.NodeInfo) *framework.Status {
 	if len(nodes) == 0 {
 		return nil
 	}
 	preferredNodeAffinity, err := getPodPreferredNodeAffinity(pod)
 	if err != nil {
 		return framework.AsStatus(err)
+	}
+	if preferredNodeAffinity == nil && pl.addedPrefSchedTerms == nil {
+		// NodeAffinity Score has nothing to do with the Pod.
+		return framework.NewStatus(framework.Skip)
 	}
 	state := &preScoreState{
 		preferredNodeAffinity: preferredNodeAffinity,
@@ -194,7 +279,7 @@ func (pl *NodeAffinity) ScoreExtensions() framework.ScoreExtensions {
 }
 
 // New initializes a new plugin and returns it.
-func New(plArgs runtime.Object, h framework.Handle) (framework.Plugin, error) {
+func New(_ context.Context, plArgs runtime.Object, h framework.Handle) (framework.Plugin, error) {
 	args, err := getArgs(plArgs)
 	if err != nil {
 		return nil, err

@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/docker/distribution/reference"
+	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
@@ -35,6 +35,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -109,7 +110,6 @@ type RunOptions struct {
 	DeleteOptions *cmddelete.DeleteOptions
 
 	DryRunStrategy cmdutil.DryRunStrategy
-	DryRunVerifier *resource.DryRunVerifier
 
 	PrintObj func(runtime.Object) error
 	Recorder genericclioptions.Recorder
@@ -129,10 +129,10 @@ type RunOptions struct {
 	Namespace        string
 	EnforceNamespace bool
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
-func NewRunOptions(streams genericclioptions.IOStreams) *RunOptions {
+func NewRunOptions(streams genericiooptions.IOStreams) *RunOptions {
 	return &RunOptions{
 		PrintFlags:  genericclioptions.NewPrintFlags("created").WithTypeSetter(scheme.Scheme),
 		DeleteFlags: cmddelete.NewDeleteFlags("to use to replace the resource."),
@@ -144,7 +144,7 @@ func NewRunOptions(streams genericclioptions.IOStreams) *RunOptions {
 	}
 }
 
-func NewCmdRun(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdRun(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewRunOptions(streams)
 
 	cmd := &cobra.Command{
@@ -166,6 +166,23 @@ func NewCmdRun(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Co
 	addRunFlags(cmd, o)
 	cmdutil.AddApplyAnnotationFlags(cmd)
 	cmdutil.AddPodRunningTimeoutFlag(cmd, defaultPodAttachTimeout)
+
+	// Deprecate the cascade flag. If set, it has no practical effect since the created pod has no dependents.
+	// TODO: Remove the cascade flag from the run command in kubectl 1.29
+	cmd.Flags().MarkDeprecated("cascade", "because it is not relevant for this command. It will be removed in version 1.29.")
+
+	// Deprecate and hide unused flags.
+	// These flags are being added to the run command by DeleteFlags to support pod deletion after attach,
+	// but they are not used if set, so they effectively do nothing.
+	// TODO: Remove these flags from the run command in kubectl 1.29
+	cmd.Flags().MarkDeprecated("filename", "because it is not used by this command. It will be removed in version 1.29.")
+	cmd.Flags().MarkDeprecated("force", "because it is not used by this command. It will be removed in version 1.29.")
+	cmd.Flags().MarkDeprecated("grace-period", "because it is not used by this command. It will be removed in version 1.29.")
+	cmd.Flags().MarkDeprecated("kustomize", "because it is not used by this command. It will be removed in version 1.29.")
+	cmd.Flags().MarkDeprecated("recursive", "because it is not used by this command. It will be removed in version 1.29.")
+	cmd.Flags().MarkDeprecated("timeout", "because it is not used by this command. It will be removed in version 1.29.")
+	cmd.Flags().MarkDeprecated("wait", "because it is not used by this command. It will be removed in version 1.29.")
+
 	return cmd
 }
 
@@ -177,11 +194,7 @@ func addRunFlags(cmd *cobra.Command, opt *RunOptions) {
 	cmd.Flags().String("image-pull-policy", "", i18n.T("The image pull policy for the container.  If left empty, this value will not be specified by the client and defaulted by the server."))
 	cmd.Flags().Bool("rm", false, "If true, delete the pod after it exits.  Only valid when attaching to the container, e.g. with '--attach' or with '-i/--stdin'.")
 	cmd.Flags().StringArray("env", []string{}, "Environment variables to set in the container.")
-	cmd.Flags().String("serviceaccount", "", "Service account to set in the pod spec.")
-	cmd.Flags().MarkDeprecated("serviceaccount", "has no effect and will be removed in 1.24.")
 	cmd.Flags().StringVar(&opt.Port, "port", opt.Port, i18n.T("The port that this container exposes."))
-	cmd.Flags().Int("hostport", -1, "The host port mapping for the container port. To demonstrate a single-machine container.")
-	cmd.Flags().MarkDeprecated("hostport", "has no effect and will be removed in 1.24.")
 	cmd.Flags().StringP("labels", "l", "", "Comma separated labels to apply to the pod. Will override previous values.")
 	cmd.Flags().BoolVarP(&opt.Interactive, "stdin", "i", opt.Interactive, "Keep stdin open on the container in the pod, even if nothing is attached.")
 	cmd.Flags().BoolVarP(&opt.TTY, "tty", "t", opt.TTY, "Allocate a TTY for the container in the pod.")
@@ -189,10 +202,6 @@ func addRunFlags(cmd *cobra.Command, opt *RunOptions) {
 	cmd.Flags().BoolVar(&opt.LeaveStdinOpen, "leave-stdin-open", opt.LeaveStdinOpen, "If the pod is started in interactive mode or with stdin, leave stdin open after the first attach completes. By default, stdin will be closed after the first attach completes.")
 	cmd.Flags().String("restart", "Always", i18n.T("The restart policy for this Pod.  Legal values [Always, OnFailure, Never]."))
 	cmd.Flags().Bool("command", false, "If true and extra arguments are present, use them as the 'command' field in the container, rather than the 'args' field which is the default.")
-	cmd.Flags().String("requests", "", i18n.T("The resource requirement requests for this container.  For example, 'cpu=100m,memory=256Mi'.  Note that server side components may assign requests depending on the server configuration, such as limit ranges."))
-	cmd.Flags().MarkDeprecated("requests", "has no effect and will be removed in 1.24.")
-	cmd.Flags().String("limits", "", i18n.T("The resource requirement limits for this container.  For example, 'cpu=200m,memory=512Mi'.  Note that server side components may assign limits depending on the server configuration, such as limit ranges."))
-	cmd.Flags().MarkDeprecated("limits", "has no effect and will be removed in 1.24.")
 	cmd.Flags().BoolVar(&opt.Expose, "expose", opt.Expose, "If true, create a ClusterIP service associated with the pod.  Requires `--port`.")
 	cmd.Flags().BoolVarP(&opt.Quiet, "quiet", "q", opt.Quiet, "If true, suppress prompt messages.")
 	cmd.Flags().BoolVar(&opt.Privileged, "privileged", opt.Privileged, i18n.T("If true, run the container in privileged mode."))
@@ -218,7 +227,6 @@ func (o *RunOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 
 	attachFlag := cmd.Flags().Lookup("attach")
 	if !attachFlag.Changed && o.Interactive {
@@ -313,13 +321,6 @@ func (o *RunOptions) Run(f cmdutil.Factory, cmd *cobra.Command, args []string) e
 
 	params["annotations"] = cmdutil.GetFlagStringArray(cmd, "annotations")
 	params["env"] = cmdutil.GetFlagStringArray(cmd, "env")
-
-	// TODO(eddiezane): These flags will be removed for 1.24
-	// https://github.com/kubernetes/kubectl/issues/1101#issuecomment-916149516
-	delete(params, "serviceaccount")
-	delete(params, "hostport")
-	delete(params, "requests")
-	delete(params, "limits")
 
 	var createdObjects = []*RunObject{}
 	runObject, err := o.createGeneratedObject(f, cmd, generator, names, params, o.NewOverrider(&corev1.Pod{}))
@@ -501,7 +502,7 @@ func handleAttachPod(f cmdutil.Factory, podClient corev1client.PodsGetter, ns, n
 	}
 
 	if err := opts.Run(); err != nil {
-		fmt.Fprintf(opts.ErrOut, "Error attaching, falling back to logs: %v\n", err)
+		fmt.Fprintf(opts.ErrOut, "warning: couldn't attach to pod/%s, falling back to streaming logs: %v\n", name, err)
 		return logOpts(f, pod, opts)
 	}
 	return nil
@@ -648,11 +649,6 @@ func (o *RunOptions) createGeneratedObject(f cmdutil.Factory, cmd *cobra.Command
 		client, err := f.ClientForMapping(mapping)
 		if err != nil {
 			return nil, err
-		}
-		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(mapping.GroupVersionKind); err != nil {
-				return nil, err
-			}
 		}
 		actualObj, err = resource.
 			NewHelper(client, mapping).

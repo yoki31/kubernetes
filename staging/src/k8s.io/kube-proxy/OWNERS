@@ -8,4 +8,6 @@ reviewers:
   - sig-network-reviewers
   - luxas
   - sttts
-  - Lion-Wei
+labels:
+  - sig/network
+  - area/kube-proxy

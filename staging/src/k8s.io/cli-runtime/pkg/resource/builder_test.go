@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,7 +29,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
 	"sigs.k8s.io/yaml"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -41,14 +39,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer/streaming"
+	"k8s.io/apimachinery/pkg/util/dump"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/rest/fake"
 	restclientwatch "k8s.io/client-go/rest/watch"
 	"k8s.io/client-go/restmapper"
-	utiltesting "k8s.io/client-go/util/testing"
-
 	// TODO we need to remove this linkage and create our own scheme
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -60,7 +57,7 @@ var (
 )
 
 func stringBody(body string) io.ReadCloser {
-	return ioutil.NopCloser(bytes.NewReader([]byte(body)))
+	return io.NopCloser(bytes.NewReader([]byte(body)))
 }
 
 func watchBody(events ...watch.Event) string {
@@ -148,6 +145,14 @@ func streamTestData() (io.Reader, *v1.PodList, *v1.ServiceList) {
 		w.Write([]byte(runtime.EncodeOrDie(corev1Codec, svc)))
 	}()
 	return r, pods, svc
+}
+
+func subresourceTestData(name string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "test", ResourceVersion: "10"},
+		Spec:       V1DeepEqualSafePodSpec(),
+		Status:     V1DeepEqualSafePodStatus(),
+	}
 }
 
 func JSONToYAMLOrDie(in []byte) []byte {
@@ -417,7 +422,7 @@ func createTestDir(t *testing.T, path string) {
 }
 
 func writeTestFile(t *testing.T, path string, contents string) {
-	if err := ioutil.WriteFile(path, []byte(contents), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
 		t.Fatalf("error creating test file %#v", err)
 	}
 }
@@ -480,10 +485,11 @@ func TestFilenameOptionsValidate(t *testing.T) {
 
 func TestPathBuilderWithMultiple(t *testing.T) {
 	// create test dirs
-	tmpDir, err := utiltesting.MkTmpdir("recursive_test_multiple")
+	tmpDir, err := os.MkdirTemp("", "recursive_test_multiple")
 	if err != nil {
 		t.Fatalf("error creating temp dir: %v", err)
 	}
+
 	createTestDir(t, fmt.Sprintf("%s/%s", tmpDir, "recursive/pod/pod_1"))
 	createTestDir(t, fmt.Sprintf("%s/%s", tmpDir, "recursive/rc/rc_1"))
 	createTestDir(t, fmt.Sprintf("%s/%s", tmpDir, "inode/hardlink"))
@@ -534,11 +540,11 @@ func TestPathBuilderWithMultiple(t *testing.T) {
 				switch tt.object.(type) {
 				case *v1.Pod:
 					if _, ok := v.Object.(*v1.Pod); !ok || v.Name != tt.expectedNames[i] || v.Namespace != "test" {
-						t.Errorf("unexpected info: %v", spew.Sdump(v.Object))
+						t.Errorf("unexpected info: %v", dump.Pretty(v.Object))
 					}
 				case *v1.ReplicationController:
 					if _, ok := v.Object.(*v1.ReplicationController); !ok || v.Name != tt.expectedNames[i] || v.Namespace != "test" {
-						t.Errorf("unexpected info: %v", spew.Sdump(v.Object))
+						t.Errorf("unexpected info: %v", dump.Pretty(v.Object))
 					}
 				}
 			}
@@ -548,10 +554,11 @@ func TestPathBuilderWithMultiple(t *testing.T) {
 
 func TestPathBuilderWithMultipleInvalid(t *testing.T) {
 	// create test dirs
-	tmpDir, err := utiltesting.MkTmpdir("recursive_test_multiple_invalid")
+	tmpDir, err := os.MkdirTemp("", "recursive_test_multiple_invalid")
 	if err != nil {
 		t.Fatalf("error creating temp dir: %v", err)
 	}
+
 	createTestDir(t, fmt.Sprintf("%s/%s", tmpDir, "inode/symlink/pod"))
 	defer os.RemoveAll(tmpDir)
 
@@ -617,8 +624,86 @@ func TestDirectoryBuilder(t *testing.T) {
 	}
 }
 
+func TestFilePatternBuilderWhenFileLiteralExists(t *testing.T) {
+	const pathPattern = "../../artifacts/oddly-named-file[x].yaml"
+	b := newDefaultBuilder().
+		FilenameParam(false, &FilenameOptions{Recursive: false, Filenames: []string{pathPattern}}).
+		NamespaceParam("test").DefaultNamespace()
+
+	test := &testVisitor{}
+	singleItemImplied := false
+
+	err := b.Do().IntoSingleItemImplied(&singleItemImplied).Visit(test.Handle)
+	if err != nil || !singleItemImplied || len(test.Infos) != 1 {
+		t.Fatalf("unexpected result: %v %t %#v", err, singleItemImplied, test.Infos)
+	}
+	if !strings.Contains(test.Infos[0].Source, "oddly-named-file[x]") {
+		t.Errorf("unexpected file name: %#v", test.Infos[0].Source)
+	}
+}
+
+func TestFilePatternBuilder(t *testing.T) {
+	b := newDefaultBuilder().
+		FilenameParam(false, &FilenameOptions{Recursive: false, Filenames: []string{"../../artifacts/guestbook/redis-*.yaml"}}).
+		NamespaceParam("test").DefaultNamespace()
+
+	test := &testVisitor{}
+	singleItemImplied := false
+
+	err := b.Do().IntoSingleItemImplied(&singleItemImplied).Visit(test.Handle)
+	if err != nil || singleItemImplied || len(test.Infos) < 3 {
+		t.Fatalf("unexpected response: %v %t %#v", err, singleItemImplied, test.Infos)
+	}
+
+	for _, info := range test.Infos {
+		if strings.Index(info.Name, "redis-") != 0 {
+			t.Errorf("unexpected response: %#v", info.Name)
+		}
+	}
+}
+
+func TestErrorFilePatternBuilder(t *testing.T) {
+	testCases := map[string]struct {
+		input        string
+		expectedErr  string
+		inputInError bool
+	}{
+		"invalid pattern": {
+			input:        "[a-z*.yaml",
+			expectedErr:  "syntax error in pattern",
+			inputInError: true,
+		},
+		"file does not exist": {
+			input:        "../../artifacts/guestbook/notexist.yaml",
+			expectedErr:  "does not exist",
+			inputInError: true,
+		},
+		"directory does not exist and valid glob": {
+			input:        "../../artifacts/_does_not_exist_/*.yaml",
+			expectedErr:  "does not exist",
+			inputInError: true,
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			b := newDefaultBuilder().
+				FilenameParam(false, &FilenameOptions{Recursive: false, Filenames: []string{tc.input}}).
+				NamespaceParam("test").DefaultNamespace()
+
+			test := &testVisitor{}
+			singleItemImplied := false
+
+			err := b.Do().IntoSingleItemImplied(&singleItemImplied).Visit(test.Handle)
+			if err == nil || len(test.Infos) != 0 || !strings.Contains(err.Error(), tc.expectedErr) ||
+				(tc.inputInError && !strings.Contains(err.Error(), tc.input)) {
+				t.Errorf("unexpected response: %v %#v", err, test.Infos)
+			}
+		})
+	}
+}
+
 func setupKustomizeDirectory() (string, error) {
-	path, err := ioutil.TempDir("/tmp", "")
+	path, err := os.MkdirTemp("", "")
 	if err != nil {
 		return "", err
 	}
@@ -689,7 +774,7 @@ resources:
 	}
 
 	for filename, content := range contents {
-		err = ioutil.WriteFile(filepath.Join(path, filename), []byte(content), 0660)
+		err = os.WriteFile(filepath.Join(path, filename), []byte(content), 0660)
 		if err != nil {
 			return "", err
 		}
@@ -724,12 +809,12 @@ func TestKustomizeDirectoryBuilder(t *testing.T) {
 		{
 			directory: filepath.Join(dir, "kustomization.yaml"),
 			expectErr: true,
-			errMsg:    "must be a directory to be a root",
+			errMsg:    "must build at directory",
 		},
 		{
 			directory: "../../artifacts/kustomization/should-not-load.yaml",
 			expectErr: true,
-			errMsg:    "must be a directory to be a root",
+			errMsg:    "must build at directory",
 		},
 	}
 	for _, tt := range tests {
@@ -904,6 +989,37 @@ func TestResourceByName(t *testing.T) {
 		t.Fatalf("unexpected response: %v %t %#v", err, singleItemImplied, test.Infos)
 	}
 	if !apiequality.Semantic.DeepEqual(&pods.Items[0], test.Objects()[0]) {
+		t.Errorf("unexpected object: %#v", test.Objects()[0])
+	}
+
+	mapping, err := b.Do().ResourceMapping()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mapping.Resource != (schema.GroupVersionResource{Group: "", Version: "v1", Resource: "pods"}) {
+		t.Errorf("unexpected resource mapping: %#v", mapping)
+	}
+}
+func TestSubresourceByName(t *testing.T) {
+	pod := subresourceTestData("foo")
+	b := newDefaultBuilderWith(fakeClientWith("", t, map[string]string{
+		"/namespaces/test/pods/foo/status": runtime.EncodeOrDie(corev1Codec, pod),
+	})).NamespaceParam("test")
+
+	test := &testVisitor{}
+	singleItemImplied := false
+
+	if b.Do().Err() == nil {
+		t.Errorf("unexpected non-error")
+	}
+
+	b.ResourceTypeOrNameArgs(true, "pods", "foo").Subresource("status")
+
+	err := b.Do().IntoSingleItemImplied(&singleItemImplied).Visit(test.Handle)
+	if err != nil || !singleItemImplied || len(test.Infos) != 1 {
+		t.Fatalf("unexpected response: %v %t %#v", err, singleItemImplied, test.Infos)
+	}
+	if !apiequality.Semantic.DeepEqual(pod, test.Objects()[0]) {
 		t.Errorf("unexpected object: %#v", test.Objects()[0])
 	}
 
@@ -1260,8 +1376,9 @@ func TestResourceTuple(t *testing.T) {
 	expectNoErr := func(err error) bool { return err == nil }
 	expectErr := func(err error) bool { return err != nil }
 	testCases := map[string]struct {
-		args  []string
-		errFn func(error) bool
+		args        []string
+		subresource string
+		errFn       func(error) bool
 	}{
 		"valid": {
 			args:  []string{"pods/foo"},
@@ -1303,6 +1420,16 @@ func TestResourceTuple(t *testing.T) {
 			args:  []string{"bar/"},
 			errFn: expectErr,
 		},
+		"valid status subresource": {
+			args:        []string{"pods/foo"},
+			subresource: "status",
+			errFn:       expectNoErr,
+		},
+		"valid status subresource for multiple with name indirection": {
+			args:        []string{"pods/foo", "pod/bar"},
+			subresource: "status",
+			errFn:       expectNoErr,
+		},
 	}
 	for k, tt := range testCases {
 		t.Run("using default namespace", func(t *testing.T) {
@@ -1311,14 +1438,18 @@ func TestResourceTuple(t *testing.T) {
 				if requireObject {
 					pods, _ := testData()
 					expectedRequests = map[string]string{
-						"/namespaces/test/pods/foo": runtime.EncodeOrDie(corev1Codec, &pods.Items[0]),
-						"/namespaces/test/pods/bar": runtime.EncodeOrDie(corev1Codec, &pods.Items[0]),
-						"/nodes/foo":                runtime.EncodeOrDie(corev1Codec, &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "foo"}}),
+						"/namespaces/test/pods/foo":        runtime.EncodeOrDie(corev1Codec, &pods.Items[0]),
+						"/namespaces/test/pods/bar":        runtime.EncodeOrDie(corev1Codec, &pods.Items[0]),
+						"/namespaces/test/pods/foo/status": runtime.EncodeOrDie(corev1Codec, subresourceTestData("foo")),
+						"/namespaces/test/pods/bar/status": runtime.EncodeOrDie(corev1Codec, subresourceTestData("bar")),
+						"/nodes/foo":                       runtime.EncodeOrDie(corev1Codec, &v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "foo"}}),
 					}
 				}
 				b := newDefaultBuilderWith(fakeClientWith(k, t, expectedRequests)).
 					NamespaceParam("test").DefaultNamespace().
-					ResourceTypeOrNameArgs(true, tt.args...).RequireObject(requireObject)
+					ResourceTypeOrNameArgs(true, tt.args...).
+					RequireObject(requireObject).
+					Subresource(tt.subresource)
 
 				r := b.Do()
 
@@ -1557,6 +1688,23 @@ func TestListObjectWithDifferentVersions(t *testing.T) {
 	}
 }
 
+func TestListObjectSubresource(t *testing.T) {
+	pods, _ := testData()
+	labelKey := metav1.LabelSelectorQueryParam(corev1GV.String())
+	b := newDefaultBuilderWith(fakeClientWith("", t, map[string]string{
+		"/namespaces/test/pods?" + labelKey: runtime.EncodeOrDie(corev1Codec, pods),
+	})).
+		NamespaceParam("test").
+		ResourceTypeOrNameArgs(true, "pods").
+		Subresource("status").
+		Flatten()
+
+	_, err := b.Do().Object()
+	if err == nil || !strings.Contains(err.Error(), "subresource cannot be used when bulk resources are specified") {
+		t.Fatalf("unexpected response: %v", err)
+	}
+}
+
 func TestWatch(t *testing.T) {
 	_, svc := testData()
 	w, err := newDefaultBuilderWith(fakeClientWith("", t, map[string]string{
@@ -1743,7 +1891,7 @@ func TestHasNames(t *testing.T) {
 
 func TestUnstructured(t *testing.T) {
 	// create test dirs
-	tmpDir, err := utiltesting.MkTmpdir("unstructured_test")
+	tmpDir, err := os.MkdirTemp(os.TempDir(), "unstructured_test")
 	if err != nil {
 		t.Fatalf("error creating temp dir: %v", err)
 	}

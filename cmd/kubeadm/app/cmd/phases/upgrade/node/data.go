@@ -17,6 +17,8 @@ limitations under the License.
 package node
 
 import (
+	"io"
+
 	"k8s.io/apimachinery/pkg/util/sets"
 	clientset "k8s.io/client-go/kubernetes"
 
@@ -29,10 +31,12 @@ type Data interface {
 	EtcdUpgrade() bool
 	RenewCerts() bool
 	DryRun() bool
-	Cfg() *kubeadmapi.InitConfiguration
+	Cfg() *kubeadmapi.UpgradeConfiguration
+	InitCfg() *kubeadmapi.InitConfiguration
 	IsControlPlaneNode() bool
 	Client() clientset.Interface
-	IgnorePreflightErrors() sets.String
+	IgnorePreflightErrors() sets.Set[string]
 	PatchesDir() string
 	KubeConfigPath() string
+	OutputWriter() io.Writer
 }

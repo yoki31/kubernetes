@@ -29,7 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	appsv1client "k8s.io/client-go/kubernetes/typed/apps/v1"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
@@ -53,7 +53,10 @@ var (
 	kubectl create deployment my-dep --image=nginx --replicas=3
 
 	# Create a deployment named my-dep that runs the busybox image and expose port 5701
-	kubectl create deployment my-dep --image=busybox --port=5701`))
+	kubectl create deployment my-dep --image=busybox --port=5701
+
+	# Create a deployment named my-dep that runs multiple containers
+	kubectl create deployment my-dep --image=busybox:latest --image=ubuntu:latest --image=nginx`))
 )
 
 // CreateDeploymentOptions is returned by NewCmdCreateDeployment
@@ -72,15 +75,15 @@ type CreateDeploymentOptions struct {
 	FieldManager     string
 	CreateAnnotation bool
 
-	Client         appsv1client.AppsV1Interface
-	DryRunStrategy cmdutil.DryRunStrategy
-	DryRunVerifier *resource.DryRunVerifier
+	Client              appsv1client.AppsV1Interface
+	DryRunStrategy      cmdutil.DryRunStrategy
+	ValidationDirective string
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 // NewCreateDeploymentOptions returns an initialized CreateDeploymentOptions instance
-func NewCreateDeploymentOptions(ioStreams genericclioptions.IOStreams) *CreateDeploymentOptions {
+func NewCreateDeploymentOptions(ioStreams genericiooptions.IOStreams) *CreateDeploymentOptions {
 	return &CreateDeploymentOptions{
 		Port:       -1,
 		Replicas:   1,
@@ -91,7 +94,7 @@ func NewCreateDeploymentOptions(ioStreams genericclioptions.IOStreams) *CreateDe
 
 // NewCmdCreateDeployment is a macro command to create a new deployment.
 // This command is better known to users as `kubectl create deployment`.
-func NewCmdCreateDeployment(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdCreateDeployment(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewCreateDeploymentOptions(ioStreams)
 	cmd := &cobra.Command{
 		Use:                   "deployment NAME --image=image -- [COMMAND] [args...]",
@@ -112,9 +115,9 @@ func NewCmdCreateDeployment(f cmdutil.Factory, ioStreams genericclioptions.IOStr
 	cmdutil.AddApplyAnnotationFlags(cmd)
 	cmdutil.AddValidateFlags(cmd)
 	cmdutil.AddDryRunFlag(cmd)
-	cmd.Flags().StringSliceVar(&o.Images, "image", o.Images, "Image names to run.")
+	cmd.Flags().StringSliceVar(&o.Images, "image", o.Images, "Image names to run. A deployment can have multiple images set for multi-container pod.")
 	cmd.MarkFlagRequired("image")
-	cmd.Flags().Int32Var(&o.Port, "port", o.Port, "The port that this container exposes.")
+	cmd.Flags().Int32Var(&o.Port, "port", o.Port, "The containerPort that this deployment exposes.")
 	cmd.Flags().Int32VarP(&o.Replicas, "replicas", "r", o.Replicas, "Number of replicas to create. Default is 1.")
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.FieldManager, "kubectl-create")
 
@@ -152,11 +155,6 @@ func (o *CreateDeploymentOptions) Complete(f cmdutil.Factory, cmd *cobra.Command
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.DryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.DryRunStrategy)
 
 	printer, err := o.PrintFlags.ToPrinter()
@@ -165,6 +163,11 @@ func (o *CreateDeploymentOptions) Complete(f cmdutil.Factory, cmd *cobra.Command
 	}
 	o.PrintObj = func(obj runtime.Object) error {
 		return printer.PrintObj(obj, o.Out)
+	}
+
+	o.ValidationDirective, err = cmdutil.GetValidationDirective(cmd)
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -191,10 +194,8 @@ func (o *CreateDeploymentOptions) Run() error {
 		if o.FieldManager != "" {
 			createOptions.FieldManager = o.FieldManager
 		}
+		createOptions.FieldValidation = o.ValidationDirective
 		if o.DryRunStrategy == cmdutil.DryRunServer {
-			if err := o.DryRunVerifier.HasSupport(deploy.GroupVersionKind()); err != nil {
-				return err
-			}
 			createOptions.DryRun = []string{metav1.DryRunAll}
 		}
 		var err error

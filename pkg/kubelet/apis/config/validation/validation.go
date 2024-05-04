@@ -19,19 +19,22 @@ package validation
 import (
 	"fmt"
 	"time"
+	"unicode"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	"k8s.io/component-base/logs"
+	"k8s.io/component-base/featuregate"
+	logsapi "k8s.io/component-base/logs/api/v1"
 	"k8s.io/component-base/metrics"
+	tracingapi "k8s.io/component-base/tracing/api/v1"
 	"k8s.io/kubernetes/pkg/features"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
+	utilfs "k8s.io/kubernetes/pkg/util/filesystem"
 	utiltaints "k8s.io/kubernetes/pkg/util/taints"
+	"k8s.io/utils/cpuset"
 )
 
 var (
@@ -39,12 +42,12 @@ var (
 )
 
 // ValidateKubeletConfiguration validates `kc` and returns an error if it is invalid
-func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error {
+func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration, featureGate featuregate.FeatureGate) error {
 	allErrors := []error{}
 
-	// Make a local copy of the global feature gates and combine it with the gates set by this configuration.
+	// Make a local copy of the feature gates and combine it with the gates set by this configuration.
 	// This allows us to validate the config against the set of gates it will actually run against.
-	localFeatureGate := utilfeature.DefaultFeatureGate.DeepCopy()
+	localFeatureGate := featureGate.DeepCopy()
 	if err := localFeatureGate.SetFromMap(kc.FeatureGates); err != nil {
 		return err
 	}
@@ -70,8 +73,8 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	if !localFeatureGate.Enabled(features.CPUCFSQuotaPeriod) && kc.CPUCFSQuotaPeriod != defaultCFSQuota {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: cpuCFSQuotaPeriod (--cpu-cfs-quota-period) %v requires feature gate CustomCPUCFSQuotaPeriod", kc.CPUCFSQuotaPeriod))
 	}
-	if localFeatureGate.Enabled(features.CPUCFSQuotaPeriod) && utilvalidation.IsInRange(int(kc.CPUCFSQuotaPeriod.Duration), int(1*time.Microsecond), int(time.Second)) != nil {
-		allErrors = append(allErrors, fmt.Errorf("invalid configuration: cpuCFSQuotaPeriod (--cpu-cfs-quota-period) %v must be between 1usec and 1sec, inclusive", kc.CPUCFSQuotaPeriod))
+	if localFeatureGate.Enabled(features.CPUCFSQuotaPeriod) && utilvalidation.IsInRange(int(kc.CPUCFSQuotaPeriod.Duration), int(1*time.Millisecond), int(time.Second)) != nil {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: cpuCFSQuotaPeriod (--cpu-cfs-quota-period) %v must be between 1ms and 1sec, inclusive", kc.CPUCFSQuotaPeriod))
 	}
 	if utilvalidation.IsInRange(int(kc.ImageGCHighThresholdPercent), 0, 100) != nil {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: imageGCHighThresholdPercent (--image-gc-high-threshold) %v must be between 0 and 100, inclusive", kc.ImageGCHighThresholdPercent))
@@ -81,6 +84,15 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	}
 	if kc.ImageGCLowThresholdPercent >= kc.ImageGCHighThresholdPercent {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: imageGCLowThresholdPercent (--image-gc-low-threshold) %v must be less than imageGCHighThresholdPercent (--image-gc-high-threshold) %v", kc.ImageGCLowThresholdPercent, kc.ImageGCHighThresholdPercent))
+	}
+	if kc.ImageMaximumGCAge.Duration != 0 && !localFeatureGate.Enabled(features.ImageMaximumGCAge) {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: ImageMaximumGCAge feature gate is required for Kubelet configuration option imageMaximumGCAge"))
+	}
+	if kc.ImageMaximumGCAge.Duration < 0 {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: imageMaximumGCAge %v must not be negative", kc.ImageMaximumGCAge.Duration))
+	}
+	if kc.ImageMaximumGCAge.Duration > 0 && kc.ImageMaximumGCAge.Duration <= kc.ImageMinimumGCAge.Duration {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: imageMaximumGCAge %v must be greater than imageMinimumGCAge %v", kc.ImageMaximumGCAge.Duration, kc.ImageMinimumGCAge.Duration))
 	}
 	if utilvalidation.IsInRange(int(kc.IPTablesDropBit), 0, 31) != nil {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: iptablesDropBit (--iptables-drop-bit) %v must be between 0 and 31, inclusive", kc.IPTablesDropBit))
@@ -121,11 +133,14 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	if kc.RegistryPullQPS < 0 {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: registryPullQPS (--registry-qps) %v must not be a negative number", kc.RegistryPullQPS))
 	}
+	if kc.MaxParallelImagePulls != nil && *kc.MaxParallelImagePulls < 1 {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: maxParallelImagePulls %v must be a positive number", *kc.MaxParallelImagePulls))
+	}
+	if kc.SerializeImagePulls && kc.MaxParallelImagePulls != nil && *kc.MaxParallelImagePulls > 1 {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: maxParallelImagePulls cannot be larger than 1 unless SerializeImagePulls (--serialize-image-pulls) is set to false"))
+	}
 	if kc.ServerTLSBootstrap && !localFeatureGate.Enabled(features.RotateKubeletServerCertificate) {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: serverTLSBootstrap %v requires feature gate RotateKubeletServerCertificate", kc.ServerTLSBootstrap))
-	}
-	if kc.TopologyManagerPolicy != kubeletconfig.NoneTopologyManagerPolicy && !localFeatureGate.Enabled(features.TopologyManager) {
-		allErrors = append(allErrors, fmt.Errorf("invalid configuration: topologyManagerPolicy %v requires feature gate TopologyManager", kc.TopologyManagerPolicy))
 	}
 
 	for _, nodeTaint := range kc.RegisterWithTaints {
@@ -133,7 +148,7 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 			allErrors = append(allErrors, fmt.Errorf("invalid taint: %v", nodeTaint))
 		}
 		if nodeTaint.TimeAdded != nil {
-			allErrors = append(allErrors, fmt.Errorf("taint TimeAdded is not nil"))
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: taint.TimeAdded is not nil"))
 		}
 	}
 
@@ -145,9 +160,7 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	default:
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: topologyManagerPolicy (--topology-manager-policy) %q must be one of: %q", kc.TopologyManagerPolicy, []string{kubeletconfig.NoneTopologyManagerPolicy, kubeletconfig.BestEffortTopologyManagerPolicy, kubeletconfig.RestrictedTopologyManagerPolicy, kubeletconfig.SingleNumaNodeTopologyManagerPolicy}))
 	}
-	if kc.TopologyManagerScope != kubeletconfig.ContainerTopologyManagerScope && !localFeatureGate.Enabled(features.TopologyManager) {
-		allErrors = append(allErrors, fmt.Errorf("invalid configuration: topologyManagerScope %v requires feature gate TopologyManager", kc.TopologyManagerScope))
-	}
+
 	switch kc.TopologyManagerScope {
 	case kubeletconfig.ContainerTopologyManagerScope:
 	case kubeletconfig.PodTopologyManagerScope:
@@ -182,10 +195,10 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	if localFeatureGate.Enabled(features.NodeSwap) {
 		switch kc.MemorySwap.SwapBehavior {
 		case "":
+		case kubetypes.NoSwap:
 		case kubetypes.LimitedSwap:
-		case kubetypes.UnlimitedSwap:
 		default:
-			allErrors = append(allErrors, fmt.Errorf("invalid configuration: memorySwap.swapBehavior %q must be one of: \"\", %q, or %q", kc.MemorySwap.SwapBehavior, kubetypes.LimitedSwap, kubetypes.UnlimitedSwap))
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: memorySwap.swapBehavior %q must be one of: \"\", %q or %q", kc.MemorySwap.SwapBehavior, kubetypes.LimitedSwap, kubetypes.NoSwap))
 		}
 	}
 	if !localFeatureGate.Enabled(features.NodeSwap) && kc.MemorySwap != (kubeletconfig.MemorySwapConfiguration{}) {
@@ -237,8 +250,16 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	}
 	allErrors = append(allErrors, metrics.ValidateShowHiddenMetricsVersion(kc.ShowHiddenMetricsForVersion)...)
 
-	if errs := logs.ValidateLoggingConfiguration(&kc.Logging, field.NewPath("logging")); len(errs) > 0 {
+	if errs := logsapi.Validate(&kc.Logging, localFeatureGate, field.NewPath("logging")); len(errs) > 0 {
 		allErrors = append(allErrors, errs.ToAggregate().Errors()...)
+	}
+
+	if localFeatureGate.Enabled(features.KubeletTracing) {
+		if errs := tracingapi.ValidateTracingConfiguration(kc.Tracing, localFeatureGate, field.NewPath("tracing")); len(errs) > 0 {
+			allErrors = append(allErrors, errs.ToAggregate().Errors()...)
+		}
+	} else if kc.Tracing != nil {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: tracing should not be configured if KubeletTracing feature flag is disabled."))
 	}
 
 	if localFeatureGate.Enabled(features.MemoryQoS) && kc.MemoryThrottlingFactor == nil {
@@ -246,6 +267,46 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	}
 	if kc.MemoryThrottlingFactor != nil && (*kc.MemoryThrottlingFactor <= 0 || *kc.MemoryThrottlingFactor > 1.0) {
 		allErrors = append(allErrors, fmt.Errorf("invalid configuration: memoryThrottlingFactor %v must be greater than 0 and less than or equal to 1.0", *kc.MemoryThrottlingFactor))
+	}
+
+	if kc.ContainerRuntimeEndpoint == "" {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: the containerRuntimeEndpoint was not specified or empty"))
+	}
+
+	if kc.EnableSystemLogQuery && !localFeatureGate.Enabled(features.NodeLogQuery) {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: NodeLogQuery feature gate is required for enableSystemLogHandler"))
+	}
+	if kc.EnableSystemLogQuery && !kc.EnableSystemLogHandler {
+		allErrors = append(allErrors,
+			fmt.Errorf("invalid configuration: enableSystemLogHandler is required for enableSystemLogQuery"))
+	}
+
+	if kc.ContainerLogMaxWorkers < 1 {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: containerLogMaxWorkers must be greater than or equal to 1"))
+	}
+
+	if kc.ContainerLogMonitorInterval.Duration.Seconds() < 3 {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: containerLogMonitorInterval must be a positive time duration greater than or equal to 3s"))
+	}
+
+	if kc.PodLogsDir == "" {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: podLogsDir was not specified"))
+	}
+
+	if !utilfs.IsAbs(kc.PodLogsDir) {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: pod logs path %q must be absolute path", kc.PodLogsDir))
+	}
+
+	if !utilfs.IsPathClean(kc.PodLogsDir) {
+		allErrors = append(allErrors, fmt.Errorf("invalid configuration: pod logs path %q must be normalized", kc.PodLogsDir))
+	}
+
+	// Since pod logs path is used in metrics, make sure it contains only ASCII characters.
+	for _, c := range kc.PodLogsDir {
+		if c > unicode.MaxASCII {
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: pod logs path %q mut contains ASCII characters only", kc.PodLogsDir))
+			break
+		}
 	}
 
 	return utilerrors.NewAggregate(allErrors)

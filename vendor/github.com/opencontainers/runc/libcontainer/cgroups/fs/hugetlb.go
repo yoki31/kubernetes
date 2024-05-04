@@ -1,9 +1,8 @@
-// +build linux
-
 package fs
 
 import (
-	"fmt"
+	"errors"
+	"os"
 	"strconv"
 
 	"github.com/opencontainers/runc/libcontainer/cgroups"
@@ -17,13 +16,28 @@ func (s *HugetlbGroup) Name() string {
 	return "hugetlb"
 }
 
-func (s *HugetlbGroup) Apply(path string, d *cgroupData) error {
-	return join(path, d.pid)
+func (s *HugetlbGroup) Apply(path string, _ *configs.Resources, pid int) error {
+	return apply(path, pid)
 }
 
 func (s *HugetlbGroup) Set(path string, r *configs.Resources) error {
+	const suffix = ".limit_in_bytes"
+	skipRsvd := false
+
 	for _, hugetlb := range r.HugetlbLimit {
-		if err := cgroups.WriteFile(path, "hugetlb."+hugetlb.Pagesize+".limit_in_bytes", strconv.FormatUint(hugetlb.Limit, 10)); err != nil {
+		prefix := "hugetlb." + hugetlb.Pagesize
+		val := strconv.FormatUint(hugetlb.Limit, 10)
+		if err := cgroups.WriteFile(path, prefix+suffix, val); err != nil {
+			return err
+		}
+		if skipRsvd {
+			continue
+		}
+		if err := cgroups.WriteFile(path, prefix+".rsvd"+suffix, val); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				skipRsvd = true
+				continue
+			}
 			return err
 		}
 	}
@@ -32,29 +46,34 @@ func (s *HugetlbGroup) Set(path string, r *configs.Resources) error {
 }
 
 func (s *HugetlbGroup) GetStats(path string, stats *cgroups.Stats) error {
-	hugetlbStats := cgroups.HugetlbStats{}
 	if !cgroups.PathExists(path) {
 		return nil
 	}
-	for _, pageSize := range HugePageSizes {
-		usage := "hugetlb." + pageSize + ".usage_in_bytes"
-		value, err := fscommon.GetCgroupParamUint(path, usage)
+	rsvd := ".rsvd"
+	hugetlbStats := cgroups.HugetlbStats{}
+	for _, pageSize := range cgroups.HugePageSizes() {
+	again:
+		prefix := "hugetlb." + pageSize + rsvd
+
+		value, err := fscommon.GetCgroupParamUint(path, prefix+".usage_in_bytes")
 		if err != nil {
-			return fmt.Errorf("failed to parse %s - %v", usage, err)
+			if rsvd != "" && errors.Is(err, os.ErrNotExist) {
+				rsvd = ""
+				goto again
+			}
+			return err
 		}
 		hugetlbStats.Usage = value
 
-		maxUsage := "hugetlb." + pageSize + ".max_usage_in_bytes"
-		value, err = fscommon.GetCgroupParamUint(path, maxUsage)
+		value, err = fscommon.GetCgroupParamUint(path, prefix+".max_usage_in_bytes")
 		if err != nil {
-			return fmt.Errorf("failed to parse %s - %v", maxUsage, err)
+			return err
 		}
 		hugetlbStats.MaxUsage = value
 
-		failcnt := "hugetlb." + pageSize + ".failcnt"
-		value, err = fscommon.GetCgroupParamUint(path, failcnt)
+		value, err = fscommon.GetCgroupParamUint(path, prefix+".failcnt")
 		if err != nil {
-			return fmt.Errorf("failed to parse %s - %v", failcnt, err)
+			return err
 		}
 		hugetlbStats.Failcnt = value
 

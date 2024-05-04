@@ -69,7 +69,7 @@ func allPrimitiveFieldPaths(t *testing.T, skipRecurseList sets.String, tp reflec
 
 	paths := sets.NewString()
 	switch tp.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		paths.Insert(allPrimitiveFieldPaths(t, skipRecurseList, tp.Elem(), path).List()...)
 	case reflect.Struct:
 		for i := 0; i < tp.NumField(); i++ {
@@ -156,6 +156,7 @@ var (
 		"TLSCertFile",
 		"TLSPrivateKeyFile",
 		"ResolverConfig",
+		"PodLogsDir",
 	)
 
 	// KubeletConfiguration fields that do not contain file paths.
@@ -175,6 +176,7 @@ var (
 		"CPUManagerReconcilePeriod.Duration",
 		"TopologyManagerPolicy",
 		"TopologyManagerScope",
+		"TopologyManagerPolicyOptions[*]",
 		"QOSReserved[*]",
 		"CgroupDriver",
 		"CgroupRoot",
@@ -184,11 +186,14 @@ var (
 		"ConfigMapAndSecretChangeDetectionStrategy",
 		"ContainerLogMaxFiles",
 		"ContainerLogMaxSize",
+		"ContainerLogMaxWorkers",
+		"ContainerLogMonitorInterval",
 		"ContentType",
 		"EnableContentionProfiling",
 		"EnableControllerAttachDetach",
 		"EnableDebugFlagsHandler",
 		"EnableDebuggingHandlers",
+		"EnableSystemLogQuery",
 		"EnableProfilingHandler",
 		"EnableServer",
 		"EnableSystemLogHandler",
@@ -210,15 +215,22 @@ var (
 		"HealthzPort",
 		"Logging.FlushFrequency",
 		"Logging.Format",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.Format",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.d.Dec.scale",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.d.Dec.unscaled.abs[*]",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.d.Dec.unscaled.neg",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.i.scale",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.i.value",
-		"Logging.Options.JSON.InfoBufferSize.Quantity.s",
-		"Logging.Options.JSON.SplitStream",
-		"Logging.Sanitization",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.Format",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.scale",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.abs[*]",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.neg",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.i.scale",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.i.value",
+		"Logging.Options.JSON.OutputRoutingOptions.InfoBufferSize.Quantity.s",
+		"Logging.Options.JSON.OutputRoutingOptions.SplitStream",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.Format",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.scale",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.abs[*]",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.d.Dec.unscaled.neg",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.i.scale",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.i.value",
+		"Logging.Options.Text.OutputRoutingOptions.InfoBufferSize.Quantity.s",
+		"Logging.Options.Text.OutputRoutingOptions.SplitStream",
 		"Logging.VModule[*].FilePattern",
 		"Logging.VModule[*].Verbosity",
 		"Logging.Verbosity",
@@ -229,6 +241,7 @@ var (
 		"ImageGCHighThresholdPercent",
 		"ImageGCLowThresholdPercent",
 		"ImageMinimumGCAge.Duration",
+		"ImageMaximumGCAge.Duration",
 		"KernelMemcgNotification",
 		"KubeAPIBurst",
 		"KubeAPIQPS",
@@ -266,6 +279,7 @@ var (
 		"RunOnce",
 		"SeccompDefault",
 		"SerializeImagePulls",
+		"MaxParallelImagePulls",
 		"ShowHiddenMetricsForVersion",
 		"ShutdownGracePeriodByPodPriority[*].Priority",
 		"ShutdownGracePeriodByPodPriority[*].ShutdownGracePeriodSeconds",
@@ -281,5 +295,10 @@ var (
 		"ShutdownGracePeriod.Duration",
 		"ShutdownGracePeriodCriticalPods.Duration",
 		"MemoryThrottlingFactor",
+		"ContainerRuntimeEndpoint",
+		"ImageServiceEndpoint",
+		"Tracing.Endpoint",
+		"Tracing.SamplingRatePerMillion",
+		"LocalStorageCapacityIsolation",
 	)
 )

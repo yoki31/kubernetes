@@ -20,19 +20,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"time"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
+
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2ekubectl "k8s.io/kubernetes/test/e2e/framework/kubectl"
 	e2estatefulset "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	e2etestfiles "k8s.io/kubernetes/test/e2e/framework/testfiles"
 	"k8s.io/kubernetes/test/e2e/upgrades"
@@ -68,11 +71,11 @@ func mysqlKubectlCreate(ns, file string) {
 		framework.Fail(err.Error())
 	}
 	input := string(data)
-	framework.RunKubectlOrDieInput(ns, input, "create", "-f", "-")
+	e2ekubectl.RunKubectlOrDieInput(ns, input, "create", "-f", "-")
 }
 
-func (t *MySQLUpgradeTest) getServiceIP(f *framework.Framework, ns, svcName string) string {
-	svc, err := f.ClientSet.CoreV1().Services(ns).Get(context.TODO(), svcName, metav1.GetOptions{})
+func (t *MySQLUpgradeTest) getServiceIP(ctx context.Context, f *framework.Framework, ns, svcName string) string {
+	svc, err := f.ClientSet.CoreV1().Services(ns).Get(ctx, svcName, metav1.GetOptions{})
 	framework.ExpectNoError(err)
 	ingress := svc.Status.LoadBalancer.Ingress
 	if len(ingress) == 0 {
@@ -85,7 +88,7 @@ func (t *MySQLUpgradeTest) getServiceIP(f *framework.Framework, ns, svcName stri
 // from the db. It then connects to the db with the write Service and populates the db with a table
 // and a few entries. Finally, it connects to the db with the read Service, and confirms the data is
 // available. The db connections are left open to be used later in the test.
-func (t *MySQLUpgradeTest) Setup(f *framework.Framework) {
+func (t *MySQLUpgradeTest) Setup(ctx context.Context, f *framework.Framework) {
 	ns := f.Namespace.Name
 	statefulsetPoll := 30 * time.Second
 	statefulsetTimeout := 10 * time.Minute
@@ -94,14 +97,14 @@ func (t *MySQLUpgradeTest) Setup(f *framework.Framework) {
 	mysqlKubectlCreate(ns, "configmap.yaml")
 
 	ginkgo.By("Creating a mysql StatefulSet")
-	e2estatefulset.CreateStatefulSet(f.ClientSet, mysqlManifestPath, ns)
+	e2estatefulset.CreateStatefulSet(ctx, f.ClientSet, mysqlManifestPath, ns)
 
 	ginkgo.By("Creating a mysql-test-server deployment")
 	mysqlKubectlCreate(ns, "tester.yaml")
 
 	ginkgo.By("Getting the ingress IPs from the test-service")
-	err := wait.PollImmediate(statefulsetPoll, statefulsetTimeout, func() (bool, error) {
-		if t.ip = t.getServiceIP(f, ns, "test-server"); t.ip == "" {
+	err := wait.PollUntilContextTimeout(ctx, statefulsetPoll, statefulsetTimeout, true, func(ctx context.Context) (bool, error) {
+		if t.ip = t.getServiceIP(ctx, f, ns, "test-server"); t.ip == "" {
 			return false, nil
 		}
 		if _, err := t.countNames(); err != nil {
@@ -122,12 +125,12 @@ func (t *MySQLUpgradeTest) Setup(f *framework.Framework) {
 	ginkgo.By("Verifying that the 2 names have been inserted")
 	count, err := t.countNames()
 	framework.ExpectNoError(err)
-	framework.ExpectEqual(count, 2)
+	gomega.Expect(count).To(gomega.Equal(2))
 }
 
 // Test continually polls the db using the read and write connections, inserting data, and checking
 // that all the data is readable.
-func (t *MySQLUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, upgrade upgrades.UpgradeType) {
+func (t *MySQLUpgradeTest) Test(ctx context.Context, f *framework.Framework, done <-chan struct{}, upgrade upgrades.UpgradeType) {
 	var writeSuccess, readSuccess, writeFailure, readFailure int
 	ginkgo.By("Continuously polling the database during upgrade.")
 	go wait.Until(func() {
@@ -171,7 +174,7 @@ func (t *MySQLUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, up
 }
 
 // Teardown performs one final check of the data's availability.
-func (t *MySQLUpgradeTest) Teardown(f *framework.Framework) {
+func (t *MySQLUpgradeTest) Teardown(ctx context.Context, f *framework.Framework) {
 	count, err := t.countNames()
 	framework.ExpectNoError(err)
 	gomega.Expect(count).To(gomega.BeNumerically(">=", t.successfulWrites), "count is too small")
@@ -181,13 +184,13 @@ func (t *MySQLUpgradeTest) Teardown(f *framework.Framework) {
 func (t *MySQLUpgradeTest) addName(name string) error {
 	val := map[string][]string{"name": {name}}
 	t.nextWrite++
-	r, err := http.PostForm(fmt.Sprintf("http://%s:8080/addName", t.ip), val)
+	r, err := http.PostForm(fmt.Sprintf("http://%s/addName", net.JoinHostPort(t.ip, "8080")), val)
 	if err != nil {
 		return err
 	}
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
-		b, err := ioutil.ReadAll(r.Body)
+		b, err := io.ReadAll(r.Body)
 		if err != nil {
 			return err
 		}
@@ -199,13 +202,13 @@ func (t *MySQLUpgradeTest) addName(name string) error {
 // countNames checks to make sure the values in testing.users are available, and returns
 // the count of them.
 func (t *MySQLUpgradeTest) countNames() (int, error) {
-	r, err := http.Get(fmt.Sprintf("http://%s:8080/countNames", t.ip))
+	r, err := http.Get(fmt.Sprintf("http://%s/countNames", net.JoinHostPort(t.ip, "8080")))
 	if err != nil {
 		return 0, err
 	}
 	defer r.Body.Close()
 	if r.StatusCode != http.StatusOK {
-		b, err := ioutil.ReadAll(r.Body)
+		b, err := io.ReadAll(r.Body)
 		if err != nil {
 			return 0, err
 		}

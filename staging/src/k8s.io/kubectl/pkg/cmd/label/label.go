@@ -35,11 +35,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
+	"k8s.io/client-go/tools/clientcmd"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scheme"
-	"k8s.io/kubectl/pkg/util"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -83,10 +85,9 @@ type LabelOptions struct {
 	enforceNamespace             bool
 	builder                      *resource.Builder
 	unstructuredClientForMapping func(mapping *meta.RESTMapping) (resource.RESTClient, error)
-	dryRunVerifier               *resource.DryRunVerifier
 
 	// Common shared fields
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
 var (
@@ -119,7 +120,7 @@ var (
 		kubectl label pods foo bar-`))
 )
 
-func NewLabelOptions(ioStreams genericclioptions.IOStreams) *LabelOptions {
+func NewLabelOptions(ioStreams genericiooptions.IOStreams) *LabelOptions {
 	return &LabelOptions{
 		RecordFlags: genericclioptions.NewRecordFlags(),
 		Recorder:    genericclioptions.NoopRecorder{},
@@ -130,7 +131,7 @@ func NewLabelOptions(ioStreams genericclioptions.IOStreams) *LabelOptions {
 	}
 }
 
-func NewCmdLabel(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdLabel(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewLabelOptions(ioStreams)
 
 	cmd := &cobra.Command{
@@ -139,7 +140,7 @@ func NewCmdLabel(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 		Short:                 i18n.T("Update the labels on a resource"),
 		Long:                  fmt.Sprintf(labelLong, validation.LabelValueMaxLength),
 		Example:               labelExample,
-		ValidArgsFunction:     util.ResourceTypeAndNameCompletionFunc(f),
+		ValidArgsFunction:     completion.ResourceTypeAndNameCompletionFunc(f),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())
@@ -153,7 +154,6 @@ func NewCmdLabel(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 	cmd.Flags().BoolVar(&o.overwrite, "overwrite", o.overwrite, "If true, allow labels to be overwritten, otherwise reject label updates that overwrite existing labels.")
 	cmd.Flags().BoolVar(&o.list, "list", o.list, "If true, display the labels for a given resource.")
 	cmd.Flags().BoolVar(&o.local, "local", o.local, "If true, label will NOT contact api-server but run locally.")
-	cmd.Flags().StringVarP(&o.selector, "selector", "l", o.selector, "Selector (label query) to filter on, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2).")
 	cmd.Flags().StringVar(&o.fieldSelector, "field-selector", o.fieldSelector, "Selector (field query) to filter on, supports '=', '==', and '!='.(e.g. --field-selector key1=value1,key2=value2). The server only supports a limited number of field queries per type.")
 	cmd.Flags().BoolVar(&o.all, "all", o.all, "Select all resources, in the namespace of the specified resource types")
 	cmd.Flags().BoolVarP(&o.allNamespaces, "all-namespaces", "A", o.allNamespaces, "If true, check the specified action in all namespaces.")
@@ -162,6 +162,7 @@ func NewCmdLabel(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 	cmdutil.AddFilenameOptionFlags(cmd, &o.FilenameOptions, usage)
 	cmdutil.AddDryRunFlag(cmd)
 	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-label")
+	cmdutil.AddLabelSelectorFlagVar(cmd, &o.selector)
 
 	return cmd
 }
@@ -181,15 +182,11 @@ func (o *LabelOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
-	if err != nil {
-		return err
-	}
-	o.dryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
 
-	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
 	o.ToPrinter = func(operation string) (printers.ResourcePrinter, error) {
 		o.PrintFlags.NamePrintFlags.Operation = operation
+		// PrintFlagsWithDryRunStrategy must be done after NamePrintFlags.Operation is set
+		cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
 		return o.PrintFlags.ToPrinter()
 	}
 
@@ -208,7 +205,7 @@ func (o *LabelOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	}
 
 	o.namespace, o.enforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
-	if err != nil {
+	if err != nil && !(o.local && clientcmd.IsEmptyConfig(err)) {
 		return err
 	}
 	o.builder = f.NewBuilder()
@@ -307,7 +304,7 @@ func (o *LabelOptions) RunLabel() error {
 			if err != nil {
 				return err
 			}
-			dataChangeMsg = updateDataChangeMsg(oldData, newObj)
+			dataChangeMsg = updateDataChangeMsg(oldData, newObj, o.overwrite)
 			outputObj = info.Object
 		} else {
 			name, namespace := info.Name, info.Namespace
@@ -334,7 +331,7 @@ func (o *LabelOptions) RunLabel() error {
 			if err != nil {
 				return err
 			}
-			dataChangeMsg = updateDataChangeMsg(oldData, newObj)
+			dataChangeMsg = updateDataChangeMsg(oldData, newObj, o.overwrite)
 			patchBytes, err := jsonpatch.CreateMergePatch(oldData, newObj)
 			createdPatch := err == nil
 			if err != nil {
@@ -342,11 +339,6 @@ func (o *LabelOptions) RunLabel() error {
 			}
 
 			mapping := info.ResourceMapping()
-			if o.dryRunStrategy == cmdutil.DryRunServer {
-				if err := o.dryRunVerifier.HasSupport(mapping.GroupVersionKind); err != nil {
-					return err
-				}
-			}
 			client, err := o.unstructuredClientForMapping(mapping)
 			if err != nil {
 				return err
@@ -395,11 +387,11 @@ func (o *LabelOptions) RunLabel() error {
 	})
 }
 
-func updateDataChangeMsg(oldObj []byte, newObj []byte) string {
+func updateDataChangeMsg(oldObj []byte, newObj []byte, overwrite bool) string {
 	msg := MsgNotLabeled
 	if !reflect.DeepEqual(oldObj, newObj) {
 		msg = MsgLabeled
-		if len(newObj) < len(oldObj) {
+		if !overwrite && len(newObj) < len(oldObj) {
 			msg = MsgUnLabeled
 		}
 	}
@@ -408,9 +400,9 @@ func updateDataChangeMsg(oldObj []byte, newObj []byte) string {
 
 func validateNoOverwrites(accessor metav1.Object, labels map[string]string) error {
 	allErrs := []error{}
-	for key := range labels {
-		if value, found := accessor.GetLabels()[key]; found {
-			allErrs = append(allErrs, fmt.Errorf("'%s' already has a value (%s), and --overwrite is false", key, value))
+	for key, value := range labels {
+		if currValue, found := accessor.GetLabels()[key]; found && currValue != value {
+			allErrs = append(allErrs, fmt.Errorf("'%s' already has a value (%s), and --overwrite is false", key, currValue))
 		}
 	}
 	return utilerrors.NewAggregate(allErrs)

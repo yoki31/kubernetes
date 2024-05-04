@@ -57,6 +57,16 @@ func GetBlockDeviceInfo(sysfs sysfs.SysFs) (map[string]info.DiskInfo, error) {
 		if strings.HasPrefix(name, "loop") || strings.HasPrefix(name, "ram") || strings.HasPrefix(name, "sr") {
 			continue
 		}
+		// Ignore "hidden" devices (i.e. nvme path device sysfs entries).
+		// These devices are in the form of /dev/nvme$Xc$Yn$Z and will
+		// not have a device handle (i.e. "hidden")
+		isHidden, err := sysfs.IsBlockDeviceHidden(name)
+		if err != nil {
+			return nil, err
+		}
+		if isHidden {
+			continue
+		}
 		diskInfo := info.DiskInfo{
 			Name: name,
 		}
@@ -104,7 +114,7 @@ func GetNetworkDevices(sysfs sysfs.SysFs) ([]info.NetInfo, error) {
 	for _, dev := range devs {
 		name := dev.Name()
 		// Ignore docker, loopback, and veth devices.
-		ignoredDevices := []string{"lo", "veth", "docker"}
+		ignoredDevices := []string{"lo", "veth", "docker", "nerdctl"}
 		ignored := false
 		for _, prefix := range ignoredDevices {
 			if strings.HasPrefix(name, prefix) {
@@ -200,7 +210,7 @@ func GetNodesInfo(sysFs sysfs.SysFs) ([]info.Node, int, error) {
 	}
 
 	if len(nodesDirs) == 0 {
-		klog.Warningf("Nodes topology is not available, providing CPU topology")
+		klog.V(4).Info("Nodes topology is not available, providing CPU topology")
 		return getCPUTopology(sysFs)
 	}
 
@@ -239,6 +249,11 @@ func GetNodesInfo(sysFs sysfs.SysFs) ([]info.Node, int, error) {
 
 		hugepagesDirectory := fmt.Sprintf("%s/%s", nodeDir, hugepagesDir)
 		node.HugePages, err = GetHugePagesInfo(sysFs, hugepagesDirectory)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		node.Distances, err = getDistances(sysFs, nodeDir)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -389,6 +404,27 @@ func getNodeMemInfo(sysFs sysfs.SysFs, nodeDir string) (uint64, error) {
 	}
 	memory = memory * 1024 // Convert to bytes
 	return uint64(memory), nil
+}
+
+// getDistances returns information about distances between NUMA nodes
+func getDistances(sysFs sysfs.SysFs, nodeDir string) ([]uint64, error) {
+	rawDistance, err := sysFs.GetDistances(nodeDir)
+	if err != nil {
+		//Ignore if per-node info is not available.
+		klog.Warningf("Found node without distance information, nodeDir: %s", nodeDir)
+		return nil, nil
+	}
+
+	distances := []uint64{}
+	for _, distance := range strings.Split(rawDistance, " ") {
+		distanceUint, err := strconv.ParseUint(distance, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("cannot convert %s to int", distance)
+		}
+		distances = append(distances, distanceUint)
+	}
+
+	return distances, nil
 }
 
 // getCoresInfo returns information about physical cores

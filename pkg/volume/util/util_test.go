@@ -17,13 +17,13 @@ limitations under the License.
 package util
 
 import (
-	"io/ioutil"
 	"os"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,201 +34,8 @@ import (
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/util/slice"
 	"k8s.io/kubernetes/pkg/volume"
-	utilptr "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
-
-var nodeLabels = map[string]string{
-	"test-key1": "test-value1",
-	"test-key2": "test-value2",
-}
-
-func TestCheckVolumeNodeAffinity(t *testing.T) {
-	type affinityTest struct {
-		name          string
-		expectSuccess bool
-		pv            *v1.PersistentVolume
-	}
-
-	cases := []affinityTest{
-		{
-			name:          "valid-nil",
-			expectSuccess: true,
-			pv:            testVolumeWithNodeAffinity(t, nil),
-		},
-		{
-			name:          "valid-no-constraints",
-			expectSuccess: true,
-			pv:            testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{}),
-		},
-		{
-			name:          "select-nothing",
-			expectSuccess: false,
-			pv:            testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{Required: &v1.NodeSelector{}}),
-		},
-		{
-			name:          "select-nothing-empty-terms",
-			expectSuccess: false,
-			pv: testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{},
-						},
-					},
-				},
-			}),
-		},
-		{
-			name:          "valid-multiple-terms",
-			expectSuccess: true,
-			pv: testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key3",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value1", "test-value3"},
-								},
-							},
-						},
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key2",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value0", "test-value2"},
-								},
-							},
-						},
-					},
-				},
-			}),
-		},
-		{
-			name:          "valid-multiple-match-expressions",
-			expectSuccess: true,
-			pv: testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key1",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value1", "test-value3"},
-								},
-								{
-									Key:      "test-key2",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value0", "test-value2"},
-								},
-							},
-						},
-					},
-				},
-			}),
-		},
-		{
-			name:          "invalid-multiple-match-expressions-key",
-			expectSuccess: false,
-			pv: testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key1",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value1", "test-value3"},
-								},
-								{
-									Key:      "test-key3",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value0", "test-value2"},
-								},
-							},
-						},
-					},
-				},
-			}),
-		},
-		{
-			name:          "invalid-multiple-match-expressions-values",
-			expectSuccess: false,
-			pv: testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key1",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value3", "test-value4"},
-								},
-								{
-									Key:      "test-key2",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value0", "test-value2"},
-								},
-							},
-						},
-					},
-				},
-			}),
-		},
-		{
-			name:          "invalid-multiple-terms",
-			expectSuccess: false,
-			pv: testVolumeWithNodeAffinity(t, &v1.VolumeNodeAffinity{
-				Required: &v1.NodeSelector{
-					NodeSelectorTerms: []v1.NodeSelectorTerm{
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key3",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value1", "test-value3"},
-								},
-							},
-						},
-						{
-							MatchExpressions: []v1.NodeSelectorRequirement{
-								{
-									Key:      "test-key2",
-									Operator: v1.NodeSelectorOpIn,
-									Values:   []string{"test-value0", "test-value1"},
-								},
-							},
-						},
-					},
-				},
-			}),
-		},
-	}
-
-	for _, c := range cases {
-		err := CheckNodeAffinity(c.pv, nodeLabels)
-
-		if err != nil && c.expectSuccess {
-			t.Errorf("CheckTopology %v returned error: %v", c.name, err)
-		}
-		if err == nil && !c.expectSuccess {
-			t.Errorf("CheckTopology %v returned success, expected error", c.name)
-		}
-	}
-}
-
-func testVolumeWithNodeAffinity(t *testing.T, affinity *v1.VolumeNodeAffinity) *v1.PersistentVolume {
-	objMeta := metav1.ObjectMeta{Name: "test-constraints"}
-	return &v1.PersistentVolume{
-		ObjectMeta: objMeta,
-		Spec: v1.PersistentVolumeSpec{
-			NodeAffinity: affinity,
-		},
-	}
-}
 
 func TestLoadPodFromFile(t *testing.T) {
 	tests := []struct {
@@ -245,7 +52,7 @@ metadata:
   name: testpod
 spec:
   containers:
-    - image: k8s.gcr.io/busybox
+    - image: registry.k8s.io/busybox
 `,
 			false,
 		},
@@ -262,7 +69,7 @@ spec:
   "spec": {
     "containers": [
       {
-        "image": "k8s.gcr.io/busybox"
+        "image": "registry.k8s.io/busybox"
       }
     ]
   }
@@ -278,14 +85,14 @@ kind: Pod
 metadata:
   name: testpod
 spec:
-  - image: k8s.gcr.io/busybox
+  - image: registry.k8s.io/busybox
 `,
 			true,
 		},
 	}
 
 	for _, test := range tests {
-		tempFile, err := ioutil.TempFile("", "podfile")
+		tempFile, err := os.CreateTemp("", "podfile")
 		defer os.Remove(tempFile.Name())
 		if err != nil {
 			t.Fatalf("cannot create temporary file: %v", err)
@@ -362,14 +169,14 @@ func TestFsUserFrom(t *testing.T) {
 					InitContainers: []v1.Container{
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
 							},
 						},
 					},
 					Containers: []v1.Container{
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
 							},
 						},
 						{
@@ -388,25 +195,62 @@ func TestFsUserFrom(t *testing.T) {
 					InitContainers: []v1.Container{
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(999),
+								RunAsUser: ptr.To[int64](999),
 							},
 						},
 					},
 					Containers: []v1.Container{
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
 							},
 						},
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
+							},
+						},
+					},
+					EphemeralContainers: []v1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: v1.EphemeralContainerCommon{
+								SecurityContext: &v1.SecurityContext{
+									RunAsUser: ptr.To[int64](1001),
+								},
 							},
 						},
 					},
 				},
 			},
 			wantFsUser: nil,
+		},
+		{
+			desc: "init and regular containers have runAsUser specified and the same",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					SecurityContext: &v1.PodSecurityContext{},
+					InitContainers: []v1.Container{
+						{
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.To[int64](1000),
+							},
+						},
+					},
+					Containers: []v1.Container{
+						{
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.To[int64](1000),
+							},
+						},
+						{
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.To[int64](1000),
+							},
+						},
+					},
+				},
+			},
+			wantFsUser: ptr.To[int64](1000),
 		},
 		{
 			desc: "all have runAsUser specified and the same",
@@ -416,25 +260,34 @@ func TestFsUserFrom(t *testing.T) {
 					InitContainers: []v1.Container{
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
 							},
 						},
 					},
 					Containers: []v1.Container{
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
 							},
 						},
 						{
 							SecurityContext: &v1.SecurityContext{
-								RunAsUser: utilptr.Int64Ptr(1000),
+								RunAsUser: ptr.To[int64](1000),
+							},
+						},
+					},
+					EphemeralContainers: []v1.EphemeralContainer{
+						{
+							EphemeralContainerCommon: v1.EphemeralContainerCommon{
+								SecurityContext: &v1.SecurityContext{
+									RunAsUser: ptr.To[int64](1000),
+								},
 							},
 						},
 					},
 				},
 			},
-			wantFsUser: utilptr.Int64Ptr(1000),
+			wantFsUser: ptr.To[int64](1000),
 		},
 	}
 
@@ -475,6 +328,41 @@ func TestGenerateVolumeName(t *testing.T) {
 	v3 := GenerateVolumeName(prefix, "pv-cinder-abcde", 100)
 	if v3 != expect {
 		t.Errorf("Expected %s, got %s", expect, v3)
+	}
+}
+
+func TestHasMountRefs(t *testing.T) {
+	testCases := map[string]struct {
+		mountPath string
+		mountRefs []string
+		expected  bool
+	}{
+		"plugin mounts only": {
+			mountPath: "/var/lib/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+			mountRefs: []string{
+				"/home/somewhere/var/lib/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+				"/var/lib/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+				"/mnt/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+				"/mnt/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+			},
+			expected: false,
+		},
+		"extra local mount": {
+			mountPath: "/var/lib/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+			mountRefs: []string{
+				"/home/somewhere/var/lib/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+				"/local/data/kubernetes.io/some-plugin/mounts/volume-XXXX",
+				"/mnt/kubelet/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+				"/mnt/plugins/kubernetes.io/some-plugin/mounts/volume-XXXX",
+			},
+			expected: true,
+		},
+	}
+	for name, test := range testCases {
+		actual := HasMountRefs(test.mountPath, test.mountRefs)
+		if actual != test.expected {
+			t.Errorf("for %s expected %v but got %v", name, test.expected, actual)
+		}
 	}
 }
 
@@ -774,12 +662,13 @@ func TestMakeAbsolutePath(t *testing.T) {
 }
 
 func TestGetPodVolumeNames(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.EphemeralContainers, true)()
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.SELinuxMountReadWriteOncePod, true)
 	tests := []struct {
-		name            string
-		pod             *v1.Pod
-		expectedMounts  sets.String
-		expectedDevices sets.String
+		name                    string
+		pod                     *v1.Pod
+		expectedMounts          sets.String
+		expectedDevices         sets.String
+		expectedSELinuxContexts map[string][]*v1.SELinuxOptions
 	}{
 		{
 			name: "empty pod",
@@ -978,16 +867,423 @@ func TestGetPodVolumeNames(t *testing.T) {
 			expectedMounts:  sets.NewString("vol1", "vol2"),
 			expectedDevices: sets.NewString(),
 		},
+		{
+			name: "pod with SELinuxOptions",
+			pod: &v1.Pod{
+				Spec: v1.PodSpec{
+					SecurityContext: &v1.PodSecurityContext{
+						SELinuxOptions: &v1.SELinuxOptions{
+							Type:  "global_context_t",
+							Level: "s0:c1,c2",
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name: "initContainer1",
+							SecurityContext: &v1.SecurityContext{
+								SELinuxOptions: &v1.SELinuxOptions{
+									Type:  "initcontainer1_context_t",
+									Level: "s0:c3,c4",
+								},
+							},
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name: "vol1",
+								},
+							},
+						},
+					},
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							SecurityContext: &v1.SecurityContext{
+								SELinuxOptions: &v1.SELinuxOptions{
+									Type:  "container1_context_t",
+									Level: "s0:c5,c6",
+								},
+							},
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name: "vol1",
+								},
+								{
+									Name: "vol2",
+								},
+							},
+						},
+						{
+							Name: "container2",
+							// No SELinux context, will be inherited from PodSecurityContext
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name: "vol2",
+								},
+								{
+									Name: "vol3",
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "vol1",
+						},
+						{
+							Name: "vol2",
+						},
+						{
+							Name: "vol3",
+						},
+					},
+				},
+			},
+			expectedMounts: sets.NewString("vol1", "vol2", "vol3"),
+			expectedSELinuxContexts: map[string][]*v1.SELinuxOptions{
+				"vol1": {
+					{
+						Type:  "initcontainer1_context_t",
+						Level: "s0:c3,c4",
+					},
+					{
+						Type:  "container1_context_t",
+						Level: "s0:c5,c6",
+					},
+				},
+				"vol2": {
+					{
+						Type:  "container1_context_t",
+						Level: "s0:c5,c6",
+					},
+					{
+						Type:  "global_context_t",
+						Level: "s0:c1,c2",
+					},
+				},
+				"vol3": {
+					{
+						Type:  "global_context_t",
+						Level: "s0:c1,c2",
+					},
+				},
+			},
+		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			mounts, devices := GetPodVolumeNames(test.pod)
+			mounts, devices, contexts := GetPodVolumeNames(test.pod)
 			if !mounts.Equal(test.expectedMounts) {
 				t.Errorf("Expected mounts: %q, got %q", mounts.List(), test.expectedMounts.List())
 			}
 			if !devices.Equal(test.expectedDevices) {
 				t.Errorf("Expected devices: %q, got %q", devices.List(), test.expectedDevices.List())
+			}
+			if len(contexts) == 0 {
+				contexts = nil
+			}
+			if !reflect.DeepEqual(test.expectedSELinuxContexts, contexts) {
+				t.Errorf("Expected SELinuxContexts: %+v\ngot: %+v", test.expectedSELinuxContexts, contexts)
+			}
+		})
+	}
+}
+
+func TestGetPersistentVolumeNodeNames(t *testing.T) {
+	tests := []struct {
+		name              string
+		pv                *v1.PersistentVolume
+		expectedNodeNames []string
+	}{
+		{
+			name: "nil PV",
+			pv:   nil,
+		},
+		{
+			name: "PV missing node affinity",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+			},
+		},
+		{
+			name: "PV node affinity missing required",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{},
+				},
+			},
+		},
+		{
+			name: "PV node affinity required zero selector terms",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{},
+		},
+		{
+			name: "PV node affinity required zero selector terms",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{},
+		},
+		{
+			name: "PV node affinity required zero match expressions",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{},
+		},
+		{
+			name: "PV node affinity required multiple match expressions",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      "foo",
+											Operator: v1.NodeSelectorOpIn,
+										},
+										{
+											Key:      "bar",
+											Operator: v1.NodeSelectorOpIn,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{},
+		},
+		{
+			name: "PV node affinity required single match expression with no values",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values:   []string{},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{},
+		},
+		{
+			name: "PV node affinity required single match expression with single node",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node1",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{
+				"node1",
+			},
+		},
+		{
+			name: "PV node affinity required single match expression with multiple nodes",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node1",
+												"node2",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{
+				"node1",
+				"node2",
+			},
+		},
+		{
+			name: "PV node affinity required multiple match expressions with multiple nodes",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      "bar",
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node1",
+												"node2",
+											},
+										},
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node3",
+												"node4",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{
+				"node3",
+				"node4",
+			},
+		},
+		{
+			name: "PV node affinity required multiple node selectors multiple match expressions with multiple nodes",
+			pv: &v1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "foo",
+				},
+				Spec: v1.PersistentVolumeSpec{
+					NodeAffinity: &v1.VolumeNodeAffinity{
+						Required: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node1",
+												"node2",
+											},
+										},
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node2",
+												"node3",
+											},
+										},
+									},
+								},
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      v1.LabelHostname,
+											Operator: v1.NodeSelectorOpIn,
+											Values: []string{
+												"node1",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNodeNames: []string{
+				"node1",
+				"node2",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			nodeNames := GetLocalPersistentVolumeNodeNames(test.pv)
+			if diff := cmp.Diff(test.expectedNodeNames, nodeNames); diff != "" {
+				t.Errorf("Unexpected nodeNames (-want, +got):\n%s", diff)
 			}
 		})
 	}

@@ -132,6 +132,66 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.AddGeneratedConversionFunc((*v1.PodFailurePolicy)(nil), (*batch.PodFailurePolicy)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_PodFailurePolicy_To_batch_PodFailurePolicy(a.(*v1.PodFailurePolicy), b.(*batch.PodFailurePolicy), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*batch.PodFailurePolicy)(nil), (*v1.PodFailurePolicy)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_batch_PodFailurePolicy_To_v1_PodFailurePolicy(a.(*batch.PodFailurePolicy), b.(*v1.PodFailurePolicy), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1.PodFailurePolicyOnExitCodesRequirement)(nil), (*batch.PodFailurePolicyOnExitCodesRequirement)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_PodFailurePolicyOnExitCodesRequirement_To_batch_PodFailurePolicyOnExitCodesRequirement(a.(*v1.PodFailurePolicyOnExitCodesRequirement), b.(*batch.PodFailurePolicyOnExitCodesRequirement), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*batch.PodFailurePolicyOnExitCodesRequirement)(nil), (*v1.PodFailurePolicyOnExitCodesRequirement)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_batch_PodFailurePolicyOnExitCodesRequirement_To_v1_PodFailurePolicyOnExitCodesRequirement(a.(*batch.PodFailurePolicyOnExitCodesRequirement), b.(*v1.PodFailurePolicyOnExitCodesRequirement), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1.PodFailurePolicyOnPodConditionsPattern)(nil), (*batch.PodFailurePolicyOnPodConditionsPattern)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_PodFailurePolicyOnPodConditionsPattern_To_batch_PodFailurePolicyOnPodConditionsPattern(a.(*v1.PodFailurePolicyOnPodConditionsPattern), b.(*batch.PodFailurePolicyOnPodConditionsPattern), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*batch.PodFailurePolicyOnPodConditionsPattern)(nil), (*v1.PodFailurePolicyOnPodConditionsPattern)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_batch_PodFailurePolicyOnPodConditionsPattern_To_v1_PodFailurePolicyOnPodConditionsPattern(a.(*batch.PodFailurePolicyOnPodConditionsPattern), b.(*v1.PodFailurePolicyOnPodConditionsPattern), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1.PodFailurePolicyRule)(nil), (*batch.PodFailurePolicyRule)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_PodFailurePolicyRule_To_batch_PodFailurePolicyRule(a.(*v1.PodFailurePolicyRule), b.(*batch.PodFailurePolicyRule), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*batch.PodFailurePolicyRule)(nil), (*v1.PodFailurePolicyRule)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_batch_PodFailurePolicyRule_To_v1_PodFailurePolicyRule(a.(*batch.PodFailurePolicyRule), b.(*v1.PodFailurePolicyRule), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1.SuccessPolicy)(nil), (*batch.SuccessPolicy)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_SuccessPolicy_To_batch_SuccessPolicy(a.(*v1.SuccessPolicy), b.(*batch.SuccessPolicy), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*batch.SuccessPolicy)(nil), (*v1.SuccessPolicy)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_batch_SuccessPolicy_To_v1_SuccessPolicy(a.(*batch.SuccessPolicy), b.(*v1.SuccessPolicy), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*v1.SuccessPolicyRule)(nil), (*batch.SuccessPolicyRule)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_v1_SuccessPolicyRule_To_batch_SuccessPolicyRule(a.(*v1.SuccessPolicyRule), b.(*batch.SuccessPolicyRule), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*batch.SuccessPolicyRule)(nil), (*v1.SuccessPolicyRule)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_batch_SuccessPolicyRule_To_v1_SuccessPolicyRule(a.(*batch.SuccessPolicyRule), b.(*v1.SuccessPolicyRule), scope)
+	}); err != nil {
+		return err
+	}
 	if err := s.AddGeneratedConversionFunc((*v1.UncountedTerminatedPods)(nil), (*batch.UncountedTerminatedPods)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_v1_UncountedTerminatedPods_To_batch_UncountedTerminatedPods(a.(*v1.UncountedTerminatedPods), b.(*batch.UncountedTerminatedPods), scope)
 	}); err != nil {
@@ -231,6 +291,7 @@ func Convert_batch_CronJobList_To_v1_CronJobList(in *batch.CronJobList, out *v1.
 
 func autoConvert_v1_CronJobSpec_To_batch_CronJobSpec(in *v1.CronJobSpec, out *batch.CronJobSpec, s conversion.Scope) error {
 	out.Schedule = in.Schedule
+	out.TimeZone = (*string)(unsafe.Pointer(in.TimeZone))
 	out.StartingDeadlineSeconds = (*int64)(unsafe.Pointer(in.StartingDeadlineSeconds))
 	out.ConcurrencyPolicy = batch.ConcurrencyPolicy(in.ConcurrencyPolicy)
 	out.Suspend = (*bool)(unsafe.Pointer(in.Suspend))
@@ -249,6 +310,7 @@ func Convert_v1_CronJobSpec_To_batch_CronJobSpec(in *v1.CronJobSpec, out *batch.
 
 func autoConvert_batch_CronJobSpec_To_v1_CronJobSpec(in *batch.CronJobSpec, out *v1.CronJobSpec, s conversion.Scope) error {
 	out.Schedule = in.Schedule
+	out.TimeZone = (*string)(unsafe.Pointer(in.TimeZone))
 	out.StartingDeadlineSeconds = (*int64)(unsafe.Pointer(in.StartingDeadlineSeconds))
 	out.ConcurrencyPolicy = v1.ConcurrencyPolicy(in.ConcurrencyPolicy)
 	out.Suspend = (*bool)(unsafe.Pointer(in.Suspend))
@@ -397,7 +459,11 @@ func autoConvert_v1_JobSpec_To_batch_JobSpec(in *v1.JobSpec, out *batch.JobSpec,
 	out.Parallelism = (*int32)(unsafe.Pointer(in.Parallelism))
 	out.Completions = (*int32)(unsafe.Pointer(in.Completions))
 	out.ActiveDeadlineSeconds = (*int64)(unsafe.Pointer(in.ActiveDeadlineSeconds))
+	out.PodFailurePolicy = (*batch.PodFailurePolicy)(unsafe.Pointer(in.PodFailurePolicy))
+	out.SuccessPolicy = (*batch.SuccessPolicy)(unsafe.Pointer(in.SuccessPolicy))
 	out.BackoffLimit = (*int32)(unsafe.Pointer(in.BackoffLimit))
+	out.BackoffLimitPerIndex = (*int32)(unsafe.Pointer(in.BackoffLimitPerIndex))
+	out.MaxFailedIndexes = (*int32)(unsafe.Pointer(in.MaxFailedIndexes))
 	out.Selector = (*metav1.LabelSelector)(unsafe.Pointer(in.Selector))
 	out.ManualSelector = (*bool)(unsafe.Pointer(in.ManualSelector))
 	if err := apiscorev1.Convert_v1_PodTemplateSpec_To_core_PodTemplateSpec(&in.Template, &out.Template, s); err != nil {
@@ -406,14 +472,20 @@ func autoConvert_v1_JobSpec_To_batch_JobSpec(in *v1.JobSpec, out *batch.JobSpec,
 	out.TTLSecondsAfterFinished = (*int32)(unsafe.Pointer(in.TTLSecondsAfterFinished))
 	out.CompletionMode = (*batch.CompletionMode)(unsafe.Pointer(in.CompletionMode))
 	out.Suspend = (*bool)(unsafe.Pointer(in.Suspend))
+	out.PodReplacementPolicy = (*batch.PodReplacementPolicy)(unsafe.Pointer(in.PodReplacementPolicy))
+	out.ManagedBy = (*string)(unsafe.Pointer(in.ManagedBy))
 	return nil
 }
 
 func autoConvert_batch_JobSpec_To_v1_JobSpec(in *batch.JobSpec, out *v1.JobSpec, s conversion.Scope) error {
 	out.Parallelism = (*int32)(unsafe.Pointer(in.Parallelism))
 	out.Completions = (*int32)(unsafe.Pointer(in.Completions))
+	out.PodFailurePolicy = (*v1.PodFailurePolicy)(unsafe.Pointer(in.PodFailurePolicy))
+	out.SuccessPolicy = (*v1.SuccessPolicy)(unsafe.Pointer(in.SuccessPolicy))
 	out.ActiveDeadlineSeconds = (*int64)(unsafe.Pointer(in.ActiveDeadlineSeconds))
 	out.BackoffLimit = (*int32)(unsafe.Pointer(in.BackoffLimit))
+	out.BackoffLimitPerIndex = (*int32)(unsafe.Pointer(in.BackoffLimitPerIndex))
+	out.MaxFailedIndexes = (*int32)(unsafe.Pointer(in.MaxFailedIndexes))
 	out.Selector = (*metav1.LabelSelector)(unsafe.Pointer(in.Selector))
 	out.ManualSelector = (*bool)(unsafe.Pointer(in.ManualSelector))
 	if err := apiscorev1.Convert_core_PodTemplateSpec_To_v1_PodTemplateSpec(&in.Template, &out.Template, s); err != nil {
@@ -422,6 +494,8 @@ func autoConvert_batch_JobSpec_To_v1_JobSpec(in *batch.JobSpec, out *v1.JobSpec,
 	out.TTLSecondsAfterFinished = (*int32)(unsafe.Pointer(in.TTLSecondsAfterFinished))
 	out.CompletionMode = (*v1.CompletionMode)(unsafe.Pointer(in.CompletionMode))
 	out.Suspend = (*bool)(unsafe.Pointer(in.Suspend))
+	out.PodReplacementPolicy = (*v1.PodReplacementPolicy)(unsafe.Pointer(in.PodReplacementPolicy))
+	out.ManagedBy = (*string)(unsafe.Pointer(in.ManagedBy))
 	return nil
 }
 
@@ -432,7 +506,9 @@ func autoConvert_v1_JobStatus_To_batch_JobStatus(in *v1.JobStatus, out *batch.Jo
 	out.Active = in.Active
 	out.Succeeded = in.Succeeded
 	out.Failed = in.Failed
+	out.Terminating = (*int32)(unsafe.Pointer(in.Terminating))
 	out.CompletedIndexes = in.CompletedIndexes
+	out.FailedIndexes = (*string)(unsafe.Pointer(in.FailedIndexes))
 	out.UncountedTerminatedPods = (*batch.UncountedTerminatedPods)(unsafe.Pointer(in.UncountedTerminatedPods))
 	out.Ready = (*int32)(unsafe.Pointer(in.Ready))
 	return nil
@@ -448,10 +524,12 @@ func autoConvert_batch_JobStatus_To_v1_JobStatus(in *batch.JobStatus, out *v1.Jo
 	out.StartTime = (*metav1.Time)(unsafe.Pointer(in.StartTime))
 	out.CompletionTime = (*metav1.Time)(unsafe.Pointer(in.CompletionTime))
 	out.Active = in.Active
+	out.Terminating = (*int32)(unsafe.Pointer(in.Terminating))
 	out.Ready = (*int32)(unsafe.Pointer(in.Ready))
 	out.Succeeded = in.Succeeded
 	out.Failed = in.Failed
 	out.CompletedIndexes = in.CompletedIndexes
+	out.FailedIndexes = (*string)(unsafe.Pointer(in.FailedIndexes))
 	out.UncountedTerminatedPods = (*v1.UncountedTerminatedPods)(unsafe.Pointer(in.UncountedTerminatedPods))
 	return nil
 }
@@ -485,6 +563,138 @@ func autoConvert_batch_JobTemplateSpec_To_v1_JobTemplateSpec(in *batch.JobTempla
 // Convert_batch_JobTemplateSpec_To_v1_JobTemplateSpec is an autogenerated conversion function.
 func Convert_batch_JobTemplateSpec_To_v1_JobTemplateSpec(in *batch.JobTemplateSpec, out *v1.JobTemplateSpec, s conversion.Scope) error {
 	return autoConvert_batch_JobTemplateSpec_To_v1_JobTemplateSpec(in, out, s)
+}
+
+func autoConvert_v1_PodFailurePolicy_To_batch_PodFailurePolicy(in *v1.PodFailurePolicy, out *batch.PodFailurePolicy, s conversion.Scope) error {
+	out.Rules = *(*[]batch.PodFailurePolicyRule)(unsafe.Pointer(&in.Rules))
+	return nil
+}
+
+// Convert_v1_PodFailurePolicy_To_batch_PodFailurePolicy is an autogenerated conversion function.
+func Convert_v1_PodFailurePolicy_To_batch_PodFailurePolicy(in *v1.PodFailurePolicy, out *batch.PodFailurePolicy, s conversion.Scope) error {
+	return autoConvert_v1_PodFailurePolicy_To_batch_PodFailurePolicy(in, out, s)
+}
+
+func autoConvert_batch_PodFailurePolicy_To_v1_PodFailurePolicy(in *batch.PodFailurePolicy, out *v1.PodFailurePolicy, s conversion.Scope) error {
+	out.Rules = *(*[]v1.PodFailurePolicyRule)(unsafe.Pointer(&in.Rules))
+	return nil
+}
+
+// Convert_batch_PodFailurePolicy_To_v1_PodFailurePolicy is an autogenerated conversion function.
+func Convert_batch_PodFailurePolicy_To_v1_PodFailurePolicy(in *batch.PodFailurePolicy, out *v1.PodFailurePolicy, s conversion.Scope) error {
+	return autoConvert_batch_PodFailurePolicy_To_v1_PodFailurePolicy(in, out, s)
+}
+
+func autoConvert_v1_PodFailurePolicyOnExitCodesRequirement_To_batch_PodFailurePolicyOnExitCodesRequirement(in *v1.PodFailurePolicyOnExitCodesRequirement, out *batch.PodFailurePolicyOnExitCodesRequirement, s conversion.Scope) error {
+	out.ContainerName = (*string)(unsafe.Pointer(in.ContainerName))
+	out.Operator = batch.PodFailurePolicyOnExitCodesOperator(in.Operator)
+	out.Values = *(*[]int32)(unsafe.Pointer(&in.Values))
+	return nil
+}
+
+// Convert_v1_PodFailurePolicyOnExitCodesRequirement_To_batch_PodFailurePolicyOnExitCodesRequirement is an autogenerated conversion function.
+func Convert_v1_PodFailurePolicyOnExitCodesRequirement_To_batch_PodFailurePolicyOnExitCodesRequirement(in *v1.PodFailurePolicyOnExitCodesRequirement, out *batch.PodFailurePolicyOnExitCodesRequirement, s conversion.Scope) error {
+	return autoConvert_v1_PodFailurePolicyOnExitCodesRequirement_To_batch_PodFailurePolicyOnExitCodesRequirement(in, out, s)
+}
+
+func autoConvert_batch_PodFailurePolicyOnExitCodesRequirement_To_v1_PodFailurePolicyOnExitCodesRequirement(in *batch.PodFailurePolicyOnExitCodesRequirement, out *v1.PodFailurePolicyOnExitCodesRequirement, s conversion.Scope) error {
+	out.ContainerName = (*string)(unsafe.Pointer(in.ContainerName))
+	out.Operator = v1.PodFailurePolicyOnExitCodesOperator(in.Operator)
+	out.Values = *(*[]int32)(unsafe.Pointer(&in.Values))
+	return nil
+}
+
+// Convert_batch_PodFailurePolicyOnExitCodesRequirement_To_v1_PodFailurePolicyOnExitCodesRequirement is an autogenerated conversion function.
+func Convert_batch_PodFailurePolicyOnExitCodesRequirement_To_v1_PodFailurePolicyOnExitCodesRequirement(in *batch.PodFailurePolicyOnExitCodesRequirement, out *v1.PodFailurePolicyOnExitCodesRequirement, s conversion.Scope) error {
+	return autoConvert_batch_PodFailurePolicyOnExitCodesRequirement_To_v1_PodFailurePolicyOnExitCodesRequirement(in, out, s)
+}
+
+func autoConvert_v1_PodFailurePolicyOnPodConditionsPattern_To_batch_PodFailurePolicyOnPodConditionsPattern(in *v1.PodFailurePolicyOnPodConditionsPattern, out *batch.PodFailurePolicyOnPodConditionsPattern, s conversion.Scope) error {
+	out.Type = core.PodConditionType(in.Type)
+	out.Status = core.ConditionStatus(in.Status)
+	return nil
+}
+
+// Convert_v1_PodFailurePolicyOnPodConditionsPattern_To_batch_PodFailurePolicyOnPodConditionsPattern is an autogenerated conversion function.
+func Convert_v1_PodFailurePolicyOnPodConditionsPattern_To_batch_PodFailurePolicyOnPodConditionsPattern(in *v1.PodFailurePolicyOnPodConditionsPattern, out *batch.PodFailurePolicyOnPodConditionsPattern, s conversion.Scope) error {
+	return autoConvert_v1_PodFailurePolicyOnPodConditionsPattern_To_batch_PodFailurePolicyOnPodConditionsPattern(in, out, s)
+}
+
+func autoConvert_batch_PodFailurePolicyOnPodConditionsPattern_To_v1_PodFailurePolicyOnPodConditionsPattern(in *batch.PodFailurePolicyOnPodConditionsPattern, out *v1.PodFailurePolicyOnPodConditionsPattern, s conversion.Scope) error {
+	out.Type = corev1.PodConditionType(in.Type)
+	out.Status = corev1.ConditionStatus(in.Status)
+	return nil
+}
+
+// Convert_batch_PodFailurePolicyOnPodConditionsPattern_To_v1_PodFailurePolicyOnPodConditionsPattern is an autogenerated conversion function.
+func Convert_batch_PodFailurePolicyOnPodConditionsPattern_To_v1_PodFailurePolicyOnPodConditionsPattern(in *batch.PodFailurePolicyOnPodConditionsPattern, out *v1.PodFailurePolicyOnPodConditionsPattern, s conversion.Scope) error {
+	return autoConvert_batch_PodFailurePolicyOnPodConditionsPattern_To_v1_PodFailurePolicyOnPodConditionsPattern(in, out, s)
+}
+
+func autoConvert_v1_PodFailurePolicyRule_To_batch_PodFailurePolicyRule(in *v1.PodFailurePolicyRule, out *batch.PodFailurePolicyRule, s conversion.Scope) error {
+	out.Action = batch.PodFailurePolicyAction(in.Action)
+	out.OnExitCodes = (*batch.PodFailurePolicyOnExitCodesRequirement)(unsafe.Pointer(in.OnExitCodes))
+	out.OnPodConditions = *(*[]batch.PodFailurePolicyOnPodConditionsPattern)(unsafe.Pointer(&in.OnPodConditions))
+	return nil
+}
+
+// Convert_v1_PodFailurePolicyRule_To_batch_PodFailurePolicyRule is an autogenerated conversion function.
+func Convert_v1_PodFailurePolicyRule_To_batch_PodFailurePolicyRule(in *v1.PodFailurePolicyRule, out *batch.PodFailurePolicyRule, s conversion.Scope) error {
+	return autoConvert_v1_PodFailurePolicyRule_To_batch_PodFailurePolicyRule(in, out, s)
+}
+
+func autoConvert_batch_PodFailurePolicyRule_To_v1_PodFailurePolicyRule(in *batch.PodFailurePolicyRule, out *v1.PodFailurePolicyRule, s conversion.Scope) error {
+	out.Action = v1.PodFailurePolicyAction(in.Action)
+	out.OnExitCodes = (*v1.PodFailurePolicyOnExitCodesRequirement)(unsafe.Pointer(in.OnExitCodes))
+	out.OnPodConditions = *(*[]v1.PodFailurePolicyOnPodConditionsPattern)(unsafe.Pointer(&in.OnPodConditions))
+	return nil
+}
+
+// Convert_batch_PodFailurePolicyRule_To_v1_PodFailurePolicyRule is an autogenerated conversion function.
+func Convert_batch_PodFailurePolicyRule_To_v1_PodFailurePolicyRule(in *batch.PodFailurePolicyRule, out *v1.PodFailurePolicyRule, s conversion.Scope) error {
+	return autoConvert_batch_PodFailurePolicyRule_To_v1_PodFailurePolicyRule(in, out, s)
+}
+
+func autoConvert_v1_SuccessPolicy_To_batch_SuccessPolicy(in *v1.SuccessPolicy, out *batch.SuccessPolicy, s conversion.Scope) error {
+	out.Rules = *(*[]batch.SuccessPolicyRule)(unsafe.Pointer(&in.Rules))
+	return nil
+}
+
+// Convert_v1_SuccessPolicy_To_batch_SuccessPolicy is an autogenerated conversion function.
+func Convert_v1_SuccessPolicy_To_batch_SuccessPolicy(in *v1.SuccessPolicy, out *batch.SuccessPolicy, s conversion.Scope) error {
+	return autoConvert_v1_SuccessPolicy_To_batch_SuccessPolicy(in, out, s)
+}
+
+func autoConvert_batch_SuccessPolicy_To_v1_SuccessPolicy(in *batch.SuccessPolicy, out *v1.SuccessPolicy, s conversion.Scope) error {
+	out.Rules = *(*[]v1.SuccessPolicyRule)(unsafe.Pointer(&in.Rules))
+	return nil
+}
+
+// Convert_batch_SuccessPolicy_To_v1_SuccessPolicy is an autogenerated conversion function.
+func Convert_batch_SuccessPolicy_To_v1_SuccessPolicy(in *batch.SuccessPolicy, out *v1.SuccessPolicy, s conversion.Scope) error {
+	return autoConvert_batch_SuccessPolicy_To_v1_SuccessPolicy(in, out, s)
+}
+
+func autoConvert_v1_SuccessPolicyRule_To_batch_SuccessPolicyRule(in *v1.SuccessPolicyRule, out *batch.SuccessPolicyRule, s conversion.Scope) error {
+	out.SucceededIndexes = (*string)(unsafe.Pointer(in.SucceededIndexes))
+	out.SucceededCount = (*int32)(unsafe.Pointer(in.SucceededCount))
+	return nil
+}
+
+// Convert_v1_SuccessPolicyRule_To_batch_SuccessPolicyRule is an autogenerated conversion function.
+func Convert_v1_SuccessPolicyRule_To_batch_SuccessPolicyRule(in *v1.SuccessPolicyRule, out *batch.SuccessPolicyRule, s conversion.Scope) error {
+	return autoConvert_v1_SuccessPolicyRule_To_batch_SuccessPolicyRule(in, out, s)
+}
+
+func autoConvert_batch_SuccessPolicyRule_To_v1_SuccessPolicyRule(in *batch.SuccessPolicyRule, out *v1.SuccessPolicyRule, s conversion.Scope) error {
+	out.SucceededIndexes = (*string)(unsafe.Pointer(in.SucceededIndexes))
+	out.SucceededCount = (*int32)(unsafe.Pointer(in.SucceededCount))
+	return nil
+}
+
+// Convert_batch_SuccessPolicyRule_To_v1_SuccessPolicyRule is an autogenerated conversion function.
+func Convert_batch_SuccessPolicyRule_To_v1_SuccessPolicyRule(in *batch.SuccessPolicyRule, out *v1.SuccessPolicyRule, s conversion.Scope) error {
+	return autoConvert_batch_SuccessPolicyRule_To_v1_SuccessPolicyRule(in, out, s)
 }
 
 func autoConvert_v1_UncountedTerminatedPods_To_batch_UncountedTerminatedPods(in *v1.UncountedTerminatedPods, out *batch.UncountedTerminatedPods, s conversion.Scope) error {

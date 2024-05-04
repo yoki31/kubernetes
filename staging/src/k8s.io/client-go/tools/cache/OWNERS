@@ -2,7 +2,6 @@
 
 approvers:
   - thockin
-  - lavalamp
   - smarterclayton
   - wojtek-t
   - deads2k
@@ -11,23 +10,19 @@ approvers:
   - ncdc
 reviewers:
   - thockin
-  - lavalamp
   - smarterclayton
   - wojtek-t
   - deads2k
-  - brendandburns
   - derekwaynecarr
   - caesarxuchao
   - mikedanese
   - liggitt
-  - pmorie
   - janetkuo
   - justinsb
   - soltysh
   - jsafrane
   - dims
   - ingvagabund
-  - resouer
-  - mfojtik
-  - sdminonne
   - ncdc
+emeritus_approvers:
+  - lavalamp

@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	flowcontrol "k8s.io/api/flowcontrol/v1beta2"
+	flowcontrol "k8s.io/api/flowcontrol/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -38,9 +38,10 @@ import (
 	fcrequest "k8s.io/apiserver/pkg/util/flowcontrol/request"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
-	fcclient "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta2"
+	fcclient "k8s.io/client-go/kubernetes/typed/flowcontrol/v1"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 )
 
 // Some tests print a lot of debug logs which slows down tests considerably,
@@ -70,7 +71,7 @@ func (cfgCtlr *configController) hasPriorityLevelState(plName string) bool {
 type ctlrTestState struct {
 	t               *testing.T
 	cfgCtlr         *configController
-	fcIfc           fcclient.FlowcontrolV1beta2Interface
+	fcIfc           fcclient.FlowcontrolV1Interface
 	existingPLs     map[string]*flowcontrol.PriorityLevelConfiguration
 	existingFSs     map[string]*flowcontrol.FlowSchema
 	heldRequestsMap map[string][]heldRequest
@@ -105,15 +106,12 @@ type ctlrTestRequest struct {
 	descr1, descr2 interface{}
 }
 
-func (cts *ctlrTestState) BeginConstruction(qc fq.QueuingConfig, rip metrics.RatioedChangeObserverPair, eso metrics.RatioedChangeObserver) (fq.QueueSetCompleter, error) {
+func (cts *ctlrTestState) BeginConstruction(qc fq.QueuingConfig, rip metrics.RatioedGaugePair, eso metrics.RatioedGauge, sdi metrics.Gauge) (fq.QueueSetCompleter, error) {
 	return ctlrTestQueueSetCompleter{cts, nil, qc}, nil
 }
 
 func (cqs *ctlrTestQueueSet) BeginConfigChange(qc fq.QueuingConfig) (fq.QueueSetCompleter, error) {
 	return ctlrTestQueueSetCompleter{cqs.cts, cqs, qc}, nil
-}
-
-func (cqs *ctlrTestQueueSet) UpdateObservations() {
 }
 
 func (cqs *ctlrTestQueueSet) Dump(bool) debug.QueueSetDump {
@@ -224,17 +222,12 @@ func (cts *ctlrTestState) popHeldRequest() (plName string, hr *heldRequest, nCou
 	}
 }
 
-var mandQueueSetNames, exclQueueSetNames = func() (sets.String, sets.String) {
+var mandQueueSetNames = func() sets.String {
 	mandQueueSetNames := sets.NewString()
-	exclQueueSetNames := sets.NewString()
 	for _, mpl := range fcboot.MandatoryPriorityLevelConfigurations {
-		if mpl.Spec.Type == flowcontrol.PriorityLevelEnablementExempt {
-			exclQueueSetNames.Insert(mpl.Name)
-		} else {
-			mandQueueSetNames.Insert(mpl.Name)
-		}
+		mandQueueSetNames.Insert(mpl.Name)
 	}
-	return mandQueueSetNames, exclQueueSetNames
+	return mandQueueSetNames
 }()
 
 func TestConfigConsumer(t *testing.T) {
@@ -244,7 +237,7 @@ func TestConfigConsumer(t *testing.T) {
 		t.Run(fmt.Sprintf("trial%d:", i), func(t *testing.T) {
 			clientset := clientsetfake.NewSimpleClientset()
 			informerFactory := informers.NewSharedInformerFactory(clientset, 0)
-			flowcontrolClient := clientset.FlowcontrolV1beta2()
+			flowcontrolClient := clientset.FlowcontrolV1()
 			cts := &ctlrTestState{t: t,
 				fcIfc:           flowcontrolClient,
 				existingFSs:     map[string]*flowcontrol.FlowSchema{},
@@ -259,10 +252,9 @@ func TestConfigConsumer(t *testing.T) {
 				FoundToDangling:        func(found bool) bool { return !found },
 				InformerFactory:        informerFactory,
 				FlowcontrolClient:      flowcontrolClient,
-				ServerConcurrencyLimit: 100,         // server concurrency limit
-				RequestWaitLimit:       time.Minute, // request wait limit
-				ReqsObsPairGenerator:   metrics.PriorityLevelConcurrencyObserverPairGenerator,
-				ExecSeatsObsGenerator:  metrics.PriorityLevelExecutionSeatsObserverGenerator,
+				ServerConcurrencyLimit: 100, // server concurrency limit
+				ReqsGaugeVec:           metrics.PriorityLevelConcurrencyGaugeVec,
+				ExecSeatsGaugeVec:      metrics.PriorityLevelExecutionSeatsGaugeVec,
 				QueueSetFactory:        cts,
 			})
 			cts.cfgCtlr = ctlr
@@ -283,7 +275,7 @@ func TestConfigConsumer(t *testing.T) {
 					}
 				}
 				persistingPLNames = nextPLNames.Union(desiredPLNames)
-				expectedQueueSetNames := persistingPLNames.Union(mandQueueSetNames).Difference(exclQueueSetNames)
+				expectedQueueSetNames := persistingPLNames.Union(mandQueueSetNames)
 				allQueueSetNames := cts.getQueueSetNames()
 				missingQueueSetNames := expectedQueueSetNames.Difference(allQueueSetNames)
 				if len(missingQueueSetNames) > 0 {
@@ -366,7 +358,7 @@ func TestAPFControllerWithGracefulShutdown(t *testing.T) {
 		Spec: flowcontrol.PriorityLevelConfigurationSpec{
 			Type: flowcontrol.PriorityLevelEnablementLimited,
 			Limited: &flowcontrol.LimitedPriorityLevelConfiguration{
-				AssuredConcurrencyShares: 10,
+				NominalConcurrencyShares: ptr.To(int32(10)),
 				LimitResponse: flowcontrol.LimitResponse{
 					Type: flowcontrol.LimitResponseTypeReject,
 				},
@@ -376,7 +368,7 @@ func TestAPFControllerWithGracefulShutdown(t *testing.T) {
 
 	clientset := clientsetfake.NewSimpleClientset(fs, pl)
 	informerFactory := informers.NewSharedInformerFactory(clientset, time.Second)
-	flowcontrolClient := clientset.FlowcontrolV1beta2()
+	flowcontrolClient := clientset.FlowcontrolV1()
 	cts := &ctlrTestState{t: t,
 		fcIfc:           flowcontrolClient,
 		existingFSs:     map[string]*flowcontrol.FlowSchema{},
@@ -392,9 +384,8 @@ func TestAPFControllerWithGracefulShutdown(t *testing.T) {
 		InformerFactory:        informerFactory,
 		FlowcontrolClient:      flowcontrolClient,
 		ServerConcurrencyLimit: 100,
-		RequestWaitLimit:       time.Minute,
-		ReqsObsPairGenerator:   metrics.PriorityLevelConcurrencyObserverPairGenerator,
-		ExecSeatsObsGenerator:  metrics.PriorityLevelExecutionSeatsObserverGenerator,
+		ReqsGaugeVec:           metrics.PriorityLevelConcurrencyGaugeVec,
+		ExecSeatsGaugeVec:      metrics.PriorityLevelExecutionSeatsGaugeVec,
 		QueueSetFactory:        cts,
 	})
 

@@ -22,9 +22,11 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 var errorStatus = NewStatus(Error, "internal error")
+var statusWithErr = AsStatus(errors.New("internal error"))
 
 func TestStatus(t *testing.T) {
 	tests := []struct {
@@ -33,6 +35,8 @@ func TestStatus(t *testing.T) {
 		expectedCode      Code
 		expectedMessage   string
 		expectedIsSuccess bool
+		expectedIsWait    bool
+		expectedIsSkip    bool
 		expectedAsError   error
 	}{
 		{
@@ -41,6 +45,18 @@ func TestStatus(t *testing.T) {
 			expectedCode:      Success,
 			expectedMessage:   "",
 			expectedIsSuccess: true,
+			expectedIsWait:    false,
+			expectedIsSkip:    false,
+			expectedAsError:   nil,
+		},
+		{
+			name:              "wait status",
+			status:            NewStatus(Wait, ""),
+			expectedCode:      Wait,
+			expectedMessage:   "",
+			expectedIsSuccess: false,
+			expectedIsWait:    true,
+			expectedIsSkip:    false,
 			expectedAsError:   nil,
 		},
 		{
@@ -49,7 +65,19 @@ func TestStatus(t *testing.T) {
 			expectedCode:      Error,
 			expectedMessage:   "unknown error",
 			expectedIsSuccess: false,
+			expectedIsWait:    false,
+			expectedIsSkip:    false,
 			expectedAsError:   errors.New("unknown error"),
+		},
+		{
+			name:              "skip status",
+			status:            NewStatus(Skip, ""),
+			expectedCode:      Skip,
+			expectedMessage:   "",
+			expectedIsSuccess: false,
+			expectedIsWait:    false,
+			expectedIsSkip:    true,
+			expectedAsError:   nil,
 		},
 		{
 			name:              "nil status",
@@ -57,6 +85,7 @@ func TestStatus(t *testing.T) {
 			expectedCode:      Success,
 			expectedMessage:   "",
 			expectedIsSuccess: true,
+			expectedIsSkip:    false,
 			expectedAsError:   nil,
 		},
 	}
@@ -75,6 +104,14 @@ func TestStatus(t *testing.T) {
 				t.Errorf("expect status.IsSuccess() returns %v, but %v", test.expectedIsSuccess, test.status.IsSuccess())
 			}
 
+			if test.status.IsWait() != test.expectedIsWait {
+				t.Errorf("status.IsWait() returns %v, but want %v", test.status.IsWait(), test.expectedIsWait)
+			}
+
+			if test.status.IsSkip() != test.expectedIsSkip {
+				t.Errorf("status.IsSkip() returns %v, but want %v", test.status.IsSkip(), test.expectedIsSkip)
+			}
+
 			if test.status.AsError() == test.expectedAsError {
 				return
 			}
@@ -86,54 +123,56 @@ func TestStatus(t *testing.T) {
 	}
 }
 
-// The String() method relies on the value and order of the status codes to function properly.
-func TestStatusCodes(t *testing.T) {
-	assertStatusCode(t, Success, 0)
-	assertStatusCode(t, Error, 1)
-	assertStatusCode(t, Unschedulable, 2)
-	assertStatusCode(t, UnschedulableAndUnresolvable, 3)
-	assertStatusCode(t, Wait, 4)
-	assertStatusCode(t, Skip, 5)
-}
-
-func assertStatusCode(t *testing.T, code Code, value int) {
-	if int(code) != value {
-		t.Errorf("Status code %q should have a value of %v but got %v", code.String(), value, int(code))
-	}
-}
-
-func TestPluginToStatusMerge(t *testing.T) {
-	tests := []struct {
-		name      string
-		statusMap PluginToStatus
-		wantCode  Code
+func TestPreFilterResultMerge(t *testing.T) {
+	tests := map[string]struct {
+		receiver *PreFilterResult
+		in       *PreFilterResult
+		want     *PreFilterResult
 	}{
-		{
-			name:      "merge Error and Unschedulable statuses",
-			statusMap: PluginToStatus{"p1": NewStatus(Error), "p2": NewStatus(Unschedulable)},
-			wantCode:  Error,
+		"all nil": {},
+		"nil receiver empty input": {
+			in:   &PreFilterResult{NodeNames: sets.New[string]()},
+			want: &PreFilterResult{NodeNames: sets.New[string]()},
 		},
-		{
-			name:      "merge Success and Unschedulable statuses",
-			statusMap: PluginToStatus{"p1": NewStatus(Success), "p2": NewStatus(Unschedulable)},
-			wantCode:  Unschedulable,
+		"empty receiver nil input": {
+			receiver: &PreFilterResult{NodeNames: sets.New[string]()},
+			want:     &PreFilterResult{NodeNames: sets.New[string]()},
 		},
-		{
-			name:      "merge Success, UnschedulableAndUnresolvable and Unschedulable statuses",
-			statusMap: PluginToStatus{"p1": NewStatus(Success), "p2": NewStatus(UnschedulableAndUnresolvable), "p3": NewStatus(Unschedulable)},
-			wantCode:  UnschedulableAndUnresolvable,
+		"empty receiver empty input": {
+			receiver: &PreFilterResult{NodeNames: sets.New[string]()},
+			in:       &PreFilterResult{NodeNames: sets.New[string]()},
+			want:     &PreFilterResult{NodeNames: sets.New[string]()},
 		},
-		{
-			name:     "merge nil status",
-			wantCode: Success,
+		"nil receiver populated input": {
+			in:   &PreFilterResult{NodeNames: sets.New("node1")},
+			want: &PreFilterResult{NodeNames: sets.New("node1")},
+		},
+		"empty receiver populated input": {
+			receiver: &PreFilterResult{NodeNames: sets.New[string]()},
+			in:       &PreFilterResult{NodeNames: sets.New("node1")},
+			want:     &PreFilterResult{NodeNames: sets.New[string]()},
+		},
+
+		"populated receiver nil input": {
+			receiver: &PreFilterResult{NodeNames: sets.New("node1")},
+			want:     &PreFilterResult{NodeNames: sets.New("node1")},
+		},
+		"populated receiver empty input": {
+			receiver: &PreFilterResult{NodeNames: sets.New("node1")},
+			in:       &PreFilterResult{NodeNames: sets.New[string]()},
+			want:     &PreFilterResult{NodeNames: sets.New[string]()},
+		},
+		"populated receiver and input": {
+			receiver: &PreFilterResult{NodeNames: sets.New("node1", "node2")},
+			in:       &PreFilterResult{NodeNames: sets.New("node2", "node3")},
+			want:     &PreFilterResult{NodeNames: sets.New("node2")},
 		},
 	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			gotStatus := test.statusMap.Merge()
-			if test.wantCode != gotStatus.Code() {
-				t.Errorf("wantCode %v, gotCode %v", test.wantCode, gotStatus.Code())
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := test.receiver.Merge(test.in)
+			if diff := cmp.Diff(test.want, got); diff != "" {
+				t.Errorf("unexpected diff (-want, +got):\n%s", diff)
 			}
 		})
 	}
@@ -182,10 +221,10 @@ func TestIsStatusEqual(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "error statuses with same message should not be equal",
+			name: "error statuses with same message should be equal",
 			x:    NewStatus(Error, "error"),
 			y:    NewStatus(Error, "error"),
-			want: false,
+			want: true,
 		},
 		{
 			name: "statuses with different reasons should not be equal",
@@ -201,14 +240,20 @@ func TestIsStatusEqual(t *testing.T) {
 		},
 		{
 			name: "wrap error status should be equal with original one",
-			x:    errorStatus,
-			y:    AsStatus(fmt.Errorf("error: %w", errorStatus.AsError())),
+			x:    statusWithErr,
+			y:    AsStatus(fmt.Errorf("error: %w", statusWithErr.AsError())),
 			want: true,
+		},
+		{
+			name: "statues with different errors that have the same message shouldn't be equal",
+			x:    AsStatus(errors.New("error")),
+			y:    AsStatus(errors.New("error")),
+			want: false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := cmp.Equal(tt.x, tt.y); got != tt.want {
+			if got := tt.x.Equal(tt.y); got != tt.want {
 				t.Errorf("cmp.Equal() = %v, want %v", got, tt.want)
 			}
 		})

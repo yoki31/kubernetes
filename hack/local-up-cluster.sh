@@ -14,6 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+KUBE_VERBOSE=${KUBE_VERBOSE:-1}
+if (( KUBE_VERBOSE > 4 )); then
+  set -x
+fi
+
 KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 
 # This script builds and runs a local kubernetes cluster. You may need to run
@@ -25,9 +30,6 @@ DOCKER_OPTS=${DOCKER_OPTS:-""}
 export DOCKER=(docker "${DOCKER_OPTS[@]}")
 DOCKER_ROOT=${DOCKER_ROOT:-""}
 ALLOW_PRIVILEGED=${ALLOW_PRIVILEGED:-""}
-DENY_SECURITY_CONTEXT_ADMISSION=${DENY_SECURITY_CONTEXT_ADMISSION:-""}
-PSP_ADMISSION=${PSP_ADMISSION:-""}
-NODE_ADMISSION=${NODE_ADMISSION:-""}
 RUNTIME_CONFIG=${RUNTIME_CONFIG:-""}
 KUBELET_AUTHORIZATION_WEBHOOK=${KUBELET_AUTHORIZATION_WEBHOOK:-""}
 KUBELET_AUTHENTICATION_WEBHOOK=${KUBELET_AUTHENTICATION_WEBHOOK:-""}
@@ -49,9 +51,22 @@ CGROUP_DRIVER=${CGROUP_DRIVER:-""}
 CGROUP_ROOT=${CGROUP_ROOT:-""}
 # owner of client certs, default to current user if not specified
 USER=${USER:-$(whoami)}
+# if true, limited swap is being used instead of unlimited swap (default)
+LIMITED_SWAP=${LIMITED_SWAP:-""}
+
+# required for cni installation
+CNI_CONFIG_DIR=${CNI_CONFIG_DIR:-/etc/cni/net.d}
+CNI_PLUGINS_VERSION=${CNI_PLUGINS_VERSION:-"v1.4.1"}
+# The arch of the CNI binary, if not set, will be fetched based on the value of `uname -m`
+CNI_TARGETARCH=${CNI_TARGETARCH:-""}
+CNI_PLUGINS_URL="https://github.com/containernetworking/plugins/releases/download"
+CNI_PLUGINS_AMD64_SHA256SUM=${CNI_PLUGINS_AMD64_SHA256SUM:-"754a71ed60a4bd08726c3af705a7d55ee3df03122b12e389fdba4bea35d7dd7e"}
+CNI_PLUGINS_ARM64_SHA256SUM=${CNI_PLUGINS_ARM64_SHA256SUM:-"de7a666fd6ad83a228086bd55756db62ef335a193d1b143d910b69f079e30598"}
+CNI_PLUGINS_PPC64LE_SHA256SUM=${CNI_PLUGINS_PPC64LE_SHA256SUM:-"8ceff026f4eccf33c261b4153af6911e10784ac169d08c1d86cf6887b9f4e99b"}
+CNI_PLUGINS_S390X_SHA256SUM=${CNI_PLUGINS_S390X_SHA256SUM:-"2f1f65ac33e961bcdc633e14c376656455824e22cc45d3ca7e31eb2750a7ebc4"}
 
 # enables testing eviction scenarios locally.
-EVICTION_HARD=${EVICTION_HARD:-"memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%"}
+EVICTION_HARD=${EVICTION_HARD:-"imagefs.available<15%,memory.available<100Mi,nodefs.available<10%,nodefs.inodesFree<5%"}
 EVICTION_SOFT=${EVICTION_SOFT:-""}
 EVICTION_PRESSURE_TRANSITION_PERIOD=${EVICTION_PRESSURE_TRANSITION_PERIOD:-"1m"}
 
@@ -66,7 +81,6 @@ DNS_SERVER_IP=${KUBE_DNS_SERVER_IP:-10.0.0.10}
 LOCAL_DNS_IP=${KUBE_LOCAL_DNS_IP:-169.254.20.10}
 DNS_MEMORY_LIMIT=${KUBE_DNS_MEMORY_LIMIT:-170Mi}
 DNS_DOMAIN=${KUBE_DNS_NAME:-"cluster.local"}
-KUBECTL=${KUBECTL:-"${KUBE_ROOT}/cluster/kubectl.sh"}
 WAIT_FOR_URL_API_SERVER=${WAIT_FOR_URL_API_SERVER:-60}
 MAX_TIME_FOR_URL_API_SERVER=${MAX_TIME_FOR_URL_API_SERVER:-1}
 ENABLE_DAEMON=${ENABLE_DAEMON:-false}
@@ -75,23 +89,23 @@ EXTERNAL_CLOUD_PROVIDER=${EXTERNAL_CLOUD_PROVIDER:-false}
 EXTERNAL_CLOUD_PROVIDER_BINARY=${EXTERNAL_CLOUD_PROVIDER_BINARY:-""}
 EXTERNAL_CLOUD_VOLUME_PLUGIN=${EXTERNAL_CLOUD_VOLUME_PLUGIN:-""}
 CONFIGURE_CLOUD_ROUTES=${CONFIGURE_CLOUD_ROUTES:-true}
+CLOUD_CTLRMGR_FLAGS=${CLOUD_CTLRMGR_FLAGS:-""}
 CLOUD_PROVIDER=${CLOUD_PROVIDER:-""}
 CLOUD_CONFIG=${CLOUD_CONFIG:-""}
 KUBELET_PROVIDER_ID=${KUBELET_PROVIDER_ID:-"$(hostname)"}
 FEATURE_GATES=${FEATURE_GATES:-"AllAlpha=false"}
+CPUMANAGER_POLICY=${CPUMANAGER_POLICY:-""}
+CPUMANAGER_RECONCILE_PERIOD=${CPUMANAGER_RECONCILE_PERIOD:-""}
+CPUMANAGER_POLICY_OPTIONS=${CPUMANAGER_POLICY_OPTIONS:-""}
 STORAGE_BACKEND=${STORAGE_BACKEND:-"etcd3"}
 STORAGE_MEDIA_TYPE=${STORAGE_MEDIA_TYPE:-"application/vnd.kubernetes.protobuf"}
 # preserve etcd data. you also need to set ETCD_DIR.
 PRESERVE_ETCD="${PRESERVE_ETCD:-false}"
-
-# enable kubernetes dashboard
-ENABLE_CLUSTER_DASHBOARD=${KUBE_ENABLE_CLUSTER_DASHBOARD:-false}
+ENABLE_TRACING=${ENABLE_TRACING:-false}
 
 # enable Kubernetes-CSI snapshotter
 ENABLE_CSI_SNAPSHOTTER=${ENABLE_CSI_SNAPSHOTTER:-false}
 
-# RBAC Mode options
-AUTHORIZATION_MODE=${AUTHORIZATION_MODE:-"Node,RBAC"}
 KUBECONFIG_TOKEN=${KUBECONFIG_TOKEN:-""}
 AUTH_ARGS=${AUTH_ARGS:-""}
 
@@ -113,34 +127,31 @@ export KUBE_PANIC_WATCH_DECODE_ERROR
 
 # Default list of admission Controllers to invoke prior to persisting objects in cluster
 # The order defined here does not matter.
-ENABLE_ADMISSION_PLUGINS=${ENABLE_ADMISSION_PLUGINS:-"NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,Priority,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota"}
+ENABLE_ADMISSION_PLUGINS=${ENABLE_ADMISSION_PLUGINS:-"NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,Priority,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota,NodeRestriction"}
 DISABLE_ADMISSION_PLUGINS=${DISABLE_ADMISSION_PLUGINS:-""}
 ADMISSION_CONTROL_CONFIG_FILE=${ADMISSION_CONTROL_CONFIG_FILE:-""}
 
-# START_MODE can be 'all', 'kubeletonly', 'nokubelet', or 'nokubeproxy'
-START_MODE=${START_MODE:-"all"}
+# START_MODE can be 'all', 'kubeletonly', 'nokubelet', 'nokubeproxy', or 'nokubelet,nokubeproxy'
+if [[ -z "${START_MODE:-}" ]]; then
+    case "$(uname -s)" in
+      Darwin)
+        START_MODE=nokubelet,nokubeproxy
+        ;;
+      Linux)
+        START_MODE=all
+        ;;
+      *)
+        echo "Unsupported host OS.  Must be Linux or Mac OS X." >&2
+        exit 1
+        ;;
+    esac
+fi
 
 # A list of controllers to enable
 KUBE_CONTROLLERS="${KUBE_CONTROLLERS:-"*"}"
 
 # Audit policy
 AUDIT_POLICY_FILE=${AUDIT_POLICY_FILE:-""}
-
-# sanity check for OpenStack provider
-if [ "${CLOUD_PROVIDER}" == "openstack" ]; then
-    if [ "${CLOUD_CONFIG}" == "" ]; then
-        echo "Missing CLOUD_CONFIG env for OpenStack provider!"
-        exit 1
-    fi
-    if [ ! -f "${CLOUD_CONFIG}" ]; then
-        echo "Cloud config ${CLOUD_CONFIG} doesn't exist"
-        exit 1
-    fi
-fi
-
-if [ "$(id -u)" != "0" ]; then
-    echo "WARNING : This script MAY be run as root for docker socket / iptables functionality; if failures occur, retry as root." 2>&1
-fi
 
 # Stop right away if the build fails
 set -e
@@ -154,6 +165,12 @@ function usage {
             echo "Example 1: hack/local-up-cluster.sh -o _output/dockerized/bin/linux/amd64/ (run from docker output)"
             echo "Example 2: hack/local-up-cluster.sh -O (auto-guess the bin path for your platform)"
             echo "Example 3: hack/local-up-cluster.sh (build a local copy of the source)"
+            echo "Example 4: FEATURE_GATES=CPUManagerPolicyOptions=true \\"
+            echo "           CPUMANAGER_POLICY=\"static\" \\"
+            echo "           CPUMANAGER_POLICY_OPTIONS=full-pcpus-only=\"true\" \\"
+            echo "           CPUMANAGER_RECONCILE_PERIOD=\"5s\" \\"
+            echo "           KUBELET_FLAGS=\"--kube-reserved=cpu=1,memory=2Gi,ephemeral-storage=1Gi --system-reserved=cpu=1,memory=2Gi,ephemeral-storage=1Gi\" \\"
+            echo "           hack/local-up-cluster.sh (build a local copy of the source with full-pcpus-only CPU Management policy)"
 }
 
 # This function guesses where the existing cached binary build is for the `-O`
@@ -195,10 +212,17 @@ do
     esac
 done
 
-if [ "x${GO_OUT}" == "x" ]; then
-    make -C "${KUBE_ROOT}" WHAT="cmd/kubectl cmd/kube-apiserver cmd/kube-controller-manager cmd/cloud-controller-manager cmd/kubelet cmd/kube-proxy cmd/kube-scheduler"
+if [ -z "${GO_OUT}" ]; then
+    binaries_to_build="cmd/kubectl cmd/kube-apiserver cmd/kube-controller-manager cmd/cloud-controller-manager cmd/kube-scheduler"
+    if [[ "${START_MODE}" != *"nokubelet"* ]]; then
+      binaries_to_build="${binaries_to_build} cmd/kubelet"
+    fi
+    if [[ "${START_MODE}" != *"nokubeproxy"* ]]; then
+      binaries_to_build="${binaries_to_build} cmd/kube-proxy"
+    fi
+    make -C "${KUBE_ROOT}" WHAT="${binaries_to_build}"
 else
-    echo "skipped the build."
+    echo "skipped the build because GO_OUT was set (${GO_OUT})"
 fi
 
 # Shut down anyway if there's an error.
@@ -226,7 +250,7 @@ LOG_LEVEL=${LOG_LEVEL:-3}
 # Use to increase verbosity on particular files, e.g. LOG_SPEC=token_controller*=5,other_controller*=4
 LOG_SPEC=${LOG_SPEC:-""}
 LOG_DIR=${LOG_DIR:-"/tmp"}
-CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-"remote"}
+TMP_DIR=${TMP_DIR:-$(kube::realpath "$(mktemp -d -t "$(basename "$0").XXXXXX")")}
 CONTAINER_RUNTIME_ENDPOINT=${CONTAINER_RUNTIME_ENDPOINT:-"unix:///run/containerd/containerd.sock"}
 RUNTIME_REQUEST_TIMEOUT=${RUNTIME_REQUEST_TIMEOUT:-"2m"}
 IMAGE_SERVICE_ENDPOINT=${IMAGE_SERVICE_ENDPOINT:-""}
@@ -234,6 +258,7 @@ CPU_CFS_QUOTA=${CPU_CFS_QUOTA:-true}
 ENABLE_HOSTPATH_PROVISIONER=${ENABLE_HOSTPATH_PROVISIONER:-"false"}
 CLAIM_BINDER_SYNC_PERIOD=${CLAIM_BINDER_SYNC_PERIOD:-"15s"} # current k8s default
 ENABLE_CONTROLLER_ATTACH_DETACH=${ENABLE_CONTROLLER_ATTACH_DETACH:-"true"} # current default
+LOCAL_STORAGE_CAPACITY_ISOLATION=${LOCAL_STORAGE_CAPACITY_ISOLATION:-"true"} # current default
 # This is the default dir and filename where the apiserver will generate a self-signed cert
 # which should be able to be used as the CA to verify itself
 CERT_DIR=${CERT_DIR:-"/var/run/kubernetes"}
@@ -269,20 +294,8 @@ function test_apiserver_off {
     fi
 }
 
-function detect_binary {
-    # Detect the OS name/arch so that we can find our binary
-    case "$(uname -s)" in
-      Darwin)
-        host_os=darwin
-        ;;
-      Linux)
-        host_os=linux
-        ;;
-      *)
-        echo "Unsupported host OS.  Must be Linux or Mac OS X." >&2
-        exit 1
-        ;;
-    esac
+function detect_arch {
+    local host_arch
 
     case "$(uname -m)" in
       x86_64*)
@@ -318,7 +331,39 @@ function detect_binary {
         ;;
     esac
 
-   GO_OUT="${KUBE_ROOT}/_output/local/bin/${host_os}/${host_arch}"
+  if [[ -z "${host_arch}" ]]; then
+    return
+  fi
+  echo -n "${host_arch}"
+}
+
+function detect_os {
+    local host_os
+
+    case "$(uname -s)" in
+      Darwin)
+        host_os=darwin
+        ;;
+      Linux)
+        host_os=linux
+        ;;
+      *)
+        echo "Unsupported host OS.  Must be Linux or Mac OS X." >&2
+        exit 1
+        ;;
+    esac
+
+  if [[ -z "${host_os}" ]]; then
+    return
+  fi
+  echo -n "${host_os}"
+}
+
+function detect_binary {
+    host_arch=$(detect_arch)
+    host_os=$(detect_os)
+
+    GO_OUT="${KUBE_ROOT}/_output/local/bin/${host_os}/${host_arch}"
 }
 
 cleanup()
@@ -362,8 +407,6 @@ cleanup()
     [[ -n "${ETCD_DIR-}" ]] && kube::etcd::clean_etcd_dir
   fi
 
-  # Drop the rule we added
-  iptables -t nat -D OUTPUT -m addrtype --dst-type LOCAL -j DOCKER || true
   exit 0
 }
 
@@ -422,7 +465,7 @@ function start_etcd {
 
 function set_service_accounts {
     SERVICE_ACCOUNT_LOOKUP=${SERVICE_ACCOUNT_LOOKUP:-true}
-    SERVICE_ACCOUNT_KEY=${SERVICE_ACCOUNT_KEY:-/tmp/kube-serviceaccount.key}
+    SERVICE_ACCOUNT_KEY=${SERVICE_ACCOUNT_KEY:-${TMP_DIR}/kube-serviceaccount.key}
     # Generate ServiceAccount key if needed
     if [[ ! -f "${SERVICE_ACCOUNT_KEY}" ]]; then
       mkdir -p "$(dirname "${SERVICE_ACCOUNT_KEY}")"
@@ -474,24 +517,19 @@ function generate_kubelet_certs {
 }
 
 function start_apiserver {
-    security_admission=""
-    if [[ -n "${DENY_SECURITY_CONTEXT_ADMISSION}" ]]; then
-      security_admission=",SecurityContextDeny"
-    fi
-    if [[ -n "${PSP_ADMISSION}" ]]; then
-      security_admission=",PodSecurityPolicy"
-    fi
-    if [[ -n "${NODE_ADMISSION}" ]]; then
-      security_admission=",NodeRestriction"
+    authorizer_args=()
+    if [[ -n "${AUTHORIZATION_CONFIG:-}" ]]; then
+      authorizer_args+=("--authorization-config=${AUTHORIZATION_CONFIG}")
+    else
+      if [[ -n "${AUTHORIZATION_MODE:-Node,RBAC}" ]]; then
+        authorizer_args+=("--authorization-mode=${AUTHORIZATION_MODE:-Node,RBAC}")
+      fi
+      authorizer_args+=(
+        "--authorization-webhook-config-file=${AUTHORIZATION_WEBHOOK_CONFIG_FILE}"
+        "--authentication-token-webhook-config-file=${AUTHENTICATION_WEBHOOK_CONFIG_FILE}"
+      )
     fi
 
-    # Append security_admission plugin
-    ENABLE_ADMISSION_PLUGINS="${ENABLE_ADMISSION_PLUGINS}${security_admission}"
-
-    authorizer_arg=""
-    if [[ -n "${AUTHORIZATION_MODE}" ]]; then
-      authorizer_arg="--authorization-mode=${AUTHORIZATION_MODE}"
-    fi
     priv_arg=""
     if [[ -n "${ALLOW_PRIVILEGED}" ]]; then
       priv_arg="--allow-privileged=${ALLOW_PRIVILEGED}"
@@ -517,6 +555,13 @@ function start_apiserver {
     fi
 
     if [[ "${REUSE_CERTS}" != true ]]; then
+      # Clean previous dynamic certs
+      # This file is owned by root, so we can't always overwrite it (depends if
+      # we run the script as root or not). Let's remove it, that is something we
+      # can always do: either we have write permissions as a user in CERT_DIR or
+      # we run the rm with sudo.
+      ${CONTROLPLANE_SUDO} rm -f "${CERT_DIR}"/kubelet-rotated.kubeconfig
+
       # Create Certs
       generate_certs
     fi
@@ -527,7 +572,7 @@ function start_apiserver {
     fi
 
     if [[ -z "${EGRESS_SELECTOR_CONFIG_FILE:-}" ]]; then
-      cat <<EOF > /tmp/kube_egress_selector_configuration.yaml
+      cat <<EOF > "${TMP_DIR}"/kube_egress_selector_configuration.yaml
 apiVersion: apiserver.k8s.io/v1beta1
 kind: EgressSelectorConfiguration
 egressSelections:
@@ -541,23 +586,23 @@ egressSelections:
   connection:
     proxyProtocol: Direct
 EOF
-      EGRESS_SELECTOR_CONFIG_FILE="/tmp/kube_egress_selector_configuration.yaml"
+      EGRESS_SELECTOR_CONFIG_FILE="${TMP_DIR}/kube_egress_selector_configuration.yaml"
     fi
 
     if [[ -z "${AUDIT_POLICY_FILE}" ]]; then
-      cat <<EOF > /tmp/kube-audit-policy-file
+      cat <<EOF > "${TMP_DIR}"/kube-audit-policy-file
 # Log all requests at the Metadata level.
 apiVersion: audit.k8s.io/v1
 kind: Policy
 rules:
 - level: Metadata
 EOF
-      AUDIT_POLICY_FILE="/tmp/kube-audit-policy-file"
+      AUDIT_POLICY_FILE="${TMP_DIR}/kube-audit-policy-file"
     fi
 
     APISERVER_LOG=${LOG_DIR}/kube-apiserver.log
     # shellcheck disable=SC2086
-    ${CONTROLPLANE_SUDO} "${GO_OUT}/kube-apiserver" "${authorizer_arg}" "${priv_arg}" ${runtime_config} \
+    ${CONTROLPLANE_SUDO} "${GO_OUT}/kube-apiserver" "${authorizer_args[@]}" "${priv_arg}" ${runtime_config} \
       ${cloud_config_arg} \
       "${advertise_address}" \
       "${node_port_range}" \
@@ -565,8 +610,6 @@ EOF
       --vmodule="${LOG_SPEC}" \
       --audit-policy-file="${AUDIT_POLICY_FILE}" \
       --audit-log-path="${LOG_DIR}/kube-apiserver-audit.log" \
-      --authorization-webhook-config-file="${AUTHORIZATION_WEBHOOK_CONFIG_FILE}" \
-      --authentication-token-webhook-config-file="${AUTHENTICATION_WEBHOOK_CONFIG_FILE}" \
       --cert-dir="${CERT_DIR}" \
       --egress-selector-config-file="${EGRESS_SELECTOR_CONFIG_FILE:-}" \
       --client-ca-file="${CERT_DIR}/client-ca.crt" \
@@ -600,21 +643,21 @@ EOF
       --cors-allowed-origins="${API_CORS_ALLOWED_ORIGINS}" >"${APISERVER_LOG}" 2>&1 &
     APISERVER_PID=$!
 
+    # Create kubeconfigs for all components, using client certs
+    kube::util::write_client_kubeconfig "${CONTROLPLANE_SUDO}" "${CERT_DIR}" "${ROOT_CA_FILE}" "${API_HOST}" "${API_SECURE_PORT}" admin
+    ${CONTROLPLANE_SUDO} chown "${USER}" "${CERT_DIR}/client-admin.key" # make readable for kubectl
+
     # Wait for kube-apiserver to come up before launching the rest of the components.
     echo "Waiting for apiserver to come up"
     kube::util::wait_for_url "https://${API_HOST_IP}:${API_SECURE_PORT}/healthz" "apiserver: " 1 "${WAIT_FOR_URL_API_SERVER}" "${MAX_TIME_FOR_URL_API_SERVER}" \
         || { echo "check apiserver logs: ${APISERVER_LOG}" ; exit 1 ; }
 
-    # Create kubeconfigs for all components, using client certs
-    kube::util::write_client_kubeconfig "${CONTROLPLANE_SUDO}" "${CERT_DIR}" "${ROOT_CA_FILE}" "${API_HOST}" "${API_SECURE_PORT}" admin
-    ${CONTROLPLANE_SUDO} chown "${USER}" "${CERT_DIR}/client-admin.key" # make readable for kubectl
     kube::util::write_client_kubeconfig "${CONTROLPLANE_SUDO}" "${CERT_DIR}" "${ROOT_CA_FILE}" "${API_HOST}" "${API_SECURE_PORT}" controller
     kube::util::write_client_kubeconfig "${CONTROLPLANE_SUDO}" "${CERT_DIR}" "${ROOT_CA_FILE}" "${API_HOST}" "${API_SECURE_PORT}" scheduler
 
     if [[ -z "${AUTH_ARGS}" ]]; then
         AUTH_ARGS="--client-key=${CERT_DIR}/client-admin.key --client-certificate=${CERT_DIR}/client-admin.crt"
     fi
-
     # Grant apiserver permission to speak to the kubelet
     ${KUBECTL} --kubeconfig "${CERT_DIR}/admin.kubeconfig" create clusterrolebinding kube-apiserver-kubelet-admin --clusterrole=system:kubelet-api-admin --user=kube-apiserver
 
@@ -622,7 +665,7 @@ EOF
     ${KUBECTL} --kubeconfig "${CERT_DIR}/admin.kubeconfig" create clusterrolebinding kubelet-csr --clusterrole=system:certificates.k8s.io:certificatesigningrequests:selfnodeclient --group=system:nodes
 
     ${CONTROLPLANE_SUDO} cp "${CERT_DIR}/admin.kubeconfig" "${CERT_DIR}/admin-kube-aggregator.kubeconfig"
-    ${CONTROLPLANE_SUDO} chown "$(whoami)" "${CERT_DIR}/admin-kube-aggregator.kubeconfig"
+    ${CONTROLPLANE_SUDO} chown -R "$(whoami)" "${CERT_DIR}"
     ${KUBECTL} config set-cluster local-up-cluster --kubeconfig="${CERT_DIR}/admin-kube-aggregator.kubeconfig" --server="https://${API_HOST_IP}:31090"
     echo "use 'kubectl --kubeconfig=${CERT_DIR}/admin-kube-aggregator.kubeconfig' to use the aggregated API server"
 
@@ -672,7 +715,9 @@ function start_cloud_controller_manager {
     fi
 
     CLOUD_CTLRMGR_LOG=${LOG_DIR}/cloud-controller-manager.log
+    # shellcheck disable=SC2086
     ${CONTROLPLANE_SUDO} "${EXTERNAL_CLOUD_PROVIDER_BINARY:-"${GO_OUT}/cloud-controller-manager"}" \
+      ${CLOUD_CTLRMGR_FLAGS} \
       --v="${LOG_LEVEL}" \
       --vmodule="${LOG_SPEC}" \
       --feature-gates="${FEATURE_GATES}" \
@@ -694,9 +739,72 @@ function wait_node_ready(){
   local interval_time=2
   kube::util::wait_for_success "$system_node_wait_time" "$interval_time" "$nodes_stats | grep $node_name"
   if [ $? == "1" ]; then
+    echo "time out on waiting $node_name exist"
+    exit 1
+  fi
+
+  local system_node_ready_time=300
+  local node_ready="${KUBECTL} --kubeconfig '${CERT_DIR}/admin.kubeconfig' wait --for=condition=Ready --timeout=60s nodes $node_name"
+  kube::util::wait_for_success "$system_node_ready_time" "$interval_time" "$node_ready"
+  if [ $? == "1" ]; then
     echo "time out on waiting $node_name info"
     exit 1
   fi
+}
+
+function refresh_docker_containerd_runc {
+  apt update
+  apt-get install ca-certificates curl gnupg ripgrep tree vim
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+
+  # shellcheck disable=SC2027 disable=SC2046
+  echo \
+    "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+    "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+    tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+  apt-get update
+  apt-get -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+  groupadd docker
+  usermod -aG docker "$USER"
+
+  if ! grep -q "cri-containerd" "/lib/systemd/system/docker.service"; then
+    sed -i "s/ExecStart=\(.*\)/ExecStart=\1 --cri-containerd/" /lib/systemd/system/docker.service
+  fi
+
+  apt install -y conntrack vim htop ripgrep dnsutils tree ripgrep build-essential
+}
+
+function wait_coredns_available(){
+  local interval_time=2
+  local coredns_wait_time=300
+
+  # kick the coredns pods to be recreated
+  ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" -n kube-system delete pods -l k8s-app=kube-dns
+  sleep 30
+
+  local coredns_pods_ready="${KUBECTL} --kubeconfig '${CERT_DIR}/admin.kubeconfig' wait --for=condition=Ready --timeout=60s pods -l k8s-app=kube-dns -n kube-system"
+  kube::util::wait_for_success "$coredns_wait_time" "$interval_time" "$coredns_pods_ready"
+  if [ $? == "1" ]; then
+    echo "time out on waiting for coredns pods"
+    exit 1
+  fi
+
+  local coredns_available="${KUBECTL} --kubeconfig '${CERT_DIR}/admin.kubeconfig' wait --for=condition=Available --timeout=60s deployments coredns -n kube-system"
+  kube::util::wait_for_success "$coredns_wait_time" "$interval_time" "$coredns_available"
+  if [ $? == "1" ]; then
+    echo "time out on waiting for coredns deployment"
+    exit 1
+  fi
+
+  # bump log level
+  echo "6" | sudo tee /proc/sys/kernel/printk
+
+  # loop through and grab all things in dmesg
+  dmesg > "${LOG_DIR}/dmesg.log"
+  dmesg -w --human >> "${LOG_DIR}/dmesg.log" &
 }
 
 function start_kubelet {
@@ -714,10 +822,6 @@ function start_kubelet {
     fi
 
     mkdir -p "/var/lib/kubelet" &>/dev/null || sudo mkdir -p "/var/lib/kubelet"
-    container_runtime_endpoint_args=()
-    if [[ -n "${CONTAINER_RUNTIME_ENDPOINT}" ]]; then
-      container_runtime_endpoint_args=("--container-runtime-endpoint=${CONTAINER_RUNTIME_ENDPOINT}")
-    fi
 
     image_service_endpoint_args=()
     if [[ -n "${IMAGE_SERVICE_ENDPOINT}" ]]; then
@@ -728,12 +832,10 @@ function start_kubelet {
     all_kubelet_flags=(
       "--v=${LOG_LEVEL}"
       "--vmodule=${LOG_SPEC}"
-      "--container-runtime=${CONTAINER_RUNTIME}"
       "--hostname-override=${HOSTNAME_OVERRIDE}"
       "${cloud_config_arg[@]}"
       "--bootstrap-kubeconfig=${CERT_DIR}/kubelet.kubeconfig"
       "--kubeconfig=${CERT_DIR}/kubelet-rotated.kubeconfig"
-      ${container_runtime_endpoint_args[@]+"${container_runtime_endpoint_args[@]}"}
       ${image_service_endpoint_args[@]+"${image_service_endpoint_args[@]}"}
       ${KUBELET_FLAGS}
     )
@@ -750,15 +852,17 @@ function start_kubelet {
         generate_kubelet_certs
     fi
 
-    cat <<EOF > /tmp/kubelet.yaml
+    cat <<EOF > "${TMP_DIR}"/kubelet.yaml
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
 address: "${KUBELET_HOST}"
 cgroupDriver: "${CGROUP_DRIVER}"
 cgroupRoot: "${CGROUP_ROOT}"
 cgroupsPerQOS: ${CGROUPS_PER_QOS}
+containerRuntimeEndpoint: ${CONTAINER_RUNTIME_ENDPOINT}
 cpuCFSQuota: ${CPU_CFS_QUOTA}
 enableControllerAttachDetach: ${ENABLE_CONTROLLER_ATTACH_DETACH}
+localStorageCapacityIsolation: ${LOCAL_STORAGE_CAPACITY_ISOLATION}
 evictionPressureTransitionPeriod: "${EVICTION_PRESSURE_TRANSITION_PERIOD}"
 failSwapOn: ${FAIL_SWAP_ON}
 port: ${KUBELET_PORT}
@@ -768,6 +872,22 @@ runtimeRequestTimeout: "${RUNTIME_REQUEST_TIMEOUT}"
 staticPodPath: "${POD_MANIFEST_PATH}"
 resolvConf: "${KUBELET_RESOLV_CONF}"
 EOF
+
+  if [[ "$ENABLE_TRACING" = true ]]; then
+        cat <<EOF >> "${TMP_DIR}"/kubelet.yaml
+tracing:
+  endpoint: localhost:4317 # the default value
+  samplingRatePerMillion: 1000000 # sample always
+EOF
+    fi
+
+    if [[ "$LIMITED_SWAP" == "true" ]]; then
+        cat <<EOF >> "${TMP_DIR}"/kubelet.yaml
+memorySwap:
+  swapBehavior: LimitedSwap
+EOF
+    fi
+
     {
       # authentication
       echo "authentication:"
@@ -819,11 +939,27 @@ EOF
       if [[ -n ${FEATURE_GATES} ]]; then
         parse_feature_gates "${FEATURE_GATES}"
       fi
-    } >>/tmp/kubelet.yaml
+
+      # cpumanager policy
+      if [[ -n ${CPUMANAGER_POLICY} ]]; then
+        echo "cpuManagerPolicy: \"${CPUMANAGER_POLICY}\""
+      fi
+
+      # cpumanager reconcile period
+      if [[ -n ${CPUMANAGER_RECONCILE_PERIOD} ]]; then
+	echo "cpuManagerReconcilePeriod: \"${CPUMANAGER_RECONCILE_PERIOD}\""
+      fi
+
+      # cpumanager policy options
+      if [[ -n ${CPUMANAGER_POLICY_OPTIONS} ]]; then
+	parse_cpumanager_policy_options "${CPUMANAGER_POLICY_OPTIONS}"
+      fi
+
+    } >>"${TMP_DIR}"/kubelet.yaml
 
     # shellcheck disable=SC2024
     sudo -E "${GO_OUT}/kubelet" "${all_kubelet_flags[@]}" \
-      --config=/tmp/kubelet.yaml >"${KUBELET_LOG}" 2>&1 &
+      --config="${TMP_DIR}"/kubelet.yaml >"${KUBELET_LOG}" 2>&1 &
     KUBELET_PID=$!
 
     # Quick check that kubelet is running.
@@ -837,13 +973,13 @@ EOF
 function start_kubeproxy {
     PROXY_LOG=${LOG_DIR}/kube-proxy.log
 
-    if [[ "${START_MODE}" != "nokubelet" ]]; then
+    if [[ "${START_MODE}" != *"nokubelet"* ]]; then
       # wait for kubelet collect node information
       echo "wait kubelet ready"
       wait_node_ready
     fi
 
-    cat <<EOF > /tmp/kube-proxy.yaml
+    cat <<EOF > "${TMP_DIR}"/kube-proxy.yaml
 apiVersion: kubeproxy.config.k8s.io/v1alpha1
 kind: KubeProxyConfiguration
 clientConnection:
@@ -860,7 +996,7 @@ conntrack:
 EOF
     if [[ -n ${FEATURE_GATES} ]]; then
       parse_feature_gates "${FEATURE_GATES}"
-    fi >>/tmp/kube-proxy.yaml
+    fi >>"${TMP_DIR}"/kube-proxy.yaml
 
     if [[ "${REUSE_CERTS}" != true ]]; then
         generate_kubeproxy_certs
@@ -869,7 +1005,7 @@ EOF
     # shellcheck disable=SC2024
     sudo "${GO_OUT}/kube-proxy" \
       --v="${LOG_LEVEL}" \
-      --config=/tmp/kube-proxy.yaml \
+      --config="${TMP_DIR}"/kube-proxy.yaml \
       --master="https://${API_HOST}:${API_SECURE_PORT}" >"${PROXY_LOG}" 2>&1 &
     PROXY_PID=$!
 }
@@ -877,8 +1013,8 @@ EOF
 function start_kubescheduler {
     SCHEDULER_LOG=${LOG_DIR}/kube-scheduler.log
 
-    cat <<EOF > /tmp/kube-scheduler.yaml
-apiVersion: kubescheduler.config.k8s.io/v1beta2
+    cat <<EOF > "${TMP_DIR}"/kube-scheduler.yaml
+apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
 clientConnection:
   kubeconfig: ${CERT_DIR}/scheduler.kubeconfig
@@ -887,7 +1023,7 @@ leaderElection:
 EOF
     ${CONTROLPLANE_SUDO} "${GO_OUT}/kube-scheduler" \
       --v="${LOG_LEVEL}" \
-      --config=/tmp/kube-scheduler.yaml \
+      --config="${TMP_DIR}"/kube-scheduler.yaml \
       --feature-gates="${FEATURE_GATES}" \
       --authentication-kubeconfig "${CERT_DIR}"/scheduler.kubeconfig \
       --authorization-kubeconfig "${CERT_DIR}"/scheduler.kubeconfig \
@@ -927,15 +1063,6 @@ function start_nodelocaldns {
   rm nodelocaldns.yaml
 }
 
-function start_kubedashboard {
-    if [[ "${ENABLE_CLUSTER_DASHBOARD}" = true ]]; then
-        echo "Creating kubernetes-dashboard"
-        # use kubectl to create the dashboard
-        ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" apply -f "${KUBE_ROOT}/cluster/addons/dashboard/dashboard.yaml"
-        echo "kubernetes-dashboard deployment and service successfully deployed."
-    fi
-}
-
 function start_csi_snapshotter {
     if [[ "${ENABLE_CSI_SNAPSHOTTER}" = true ]]; then
         echo "Creating Kubernetes-CSI snapshotter"
@@ -947,13 +1074,6 @@ function start_csi_snapshotter {
 
         echo "Kubernetes-CSI snapshotter successfully deployed."
     fi
-}
-
-function create_psp_policy {
-    echo "Create podsecuritypolicy policies for RBAC."
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f "${KUBE_ROOT}/examples/podsecuritypolicy/rbac/policies.yaml"
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f "${KUBE_ROOT}/examples/podsecuritypolicy/rbac/roles.yaml"
-    ${KUBECTL} --kubeconfig="${CERT_DIR}/admin.kubeconfig" create -f "${KUBE_ROOT}/examples/podsecuritypolicy/rbac/bindings.yaml"
 }
 
 function create_storage_class {
@@ -978,9 +1098,17 @@ if [[ "${START_MODE}" != "kubeletonly" ]]; then
   else
     echo "Local Kubernetes cluster is running."
   fi
+
+  echo
+  echo "Configurations:"
+  for f in "${TMP_DIR}"/*; do
+    echo "  ${f}"
+  done
+
   cat <<EOF
 
 Logs:
+  ${ETCD_LOGFILE:-}
   ${APISERVER_LOG:-}
   ${CTLRMGR_LOG:-}
   ${CLOUD_CTLRMGR_LOG:-}
@@ -991,7 +1119,7 @@ fi
 
 if [[ "${START_MODE}" == "all" ]]; then
   echo "  ${KUBELET_LOG}"
-elif [[ "${START_MODE}" == "nokubelet" ]]; then
+elif [[ "${START_MODE}" == *"nokubelet"* ]]; then
   echo
   echo "No kubelet was started because you set START_MODE=nokubelet"
   echo "Run this script again with START_MODE=kubeletonly to run a kubelet"
@@ -1029,6 +1157,16 @@ EOF
 fi
 }
 
+function parse_cpumanager_policy_options {
+  echo "cpuManagerPolicyOptions:"
+  # Convert from foo=true,bar=false to
+  #   foo: "true"
+  #   bar: "false"
+  for option in $(echo "$1" | tr ',' ' '); do
+    echo "${option}" | ${SED} -e 's/\(.*\)=\(.*\)/  \1: "\2"/'
+  done
+}
+
 function parse_feature_gates {
   echo "featureGates:"
   # Convert from foo=true,bar=false to
@@ -1049,6 +1187,113 @@ function parse_eviction {
   done
 }
 
+function update_packages {
+  apt-get update && apt-get install -y sudo
+  apt-get remove -y systemd
+
+  # Do not update docker / containerd / runc
+  sed -i 's/\(.*\)docker\(.*\)/#\1docker\2/' /etc/apt/sources.list
+
+  # jump through hoops to avoid removing docker/containerd
+  # when installing nftables and kmod, as those docker/containerd
+  # packages depend on iptables
+  dpkg -r --force-depends iptables && \
+  apt -y --fix-broken install && \
+  apt -y install nftables kmod && \
+  apt -y install iptables
+}
+
+function tolerate_cgroups_v2 {
+  # https://github.com/moby/moby/blob/be220af9fb36e9baa9a75bbc41f784260aa6f96e/hack/dind#L28-L38
+  # cgroup v2: enable nesting
+  if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+    # move the processes from the root group to the /init group,
+    # otherwise writing subtree_control fails with EBUSY.
+    # An error during moving non-existent process (i.e., "cat") is ignored.
+    mkdir -p /sys/fs/cgroup/init
+    xargs -rn1 < /sys/fs/cgroup/cgroup.procs > /sys/fs/cgroup/init/cgroup.procs || :
+    # enable controllers
+    sed -e 's/ / +/g' -e 's/^/+/' < /sys/fs/cgroup/cgroup.controllers \
+      > /sys/fs/cgroup/cgroup.subtree_control
+  fi
+}
+
+function install_cni {
+  if [[ -n "${CNI_TARGETARCH}" ]]; then
+    host_arch="${CNI_TARGETARCH}"
+  else
+    host_arch=$(detect_arch)
+  fi
+
+  cni_plugin_tarball="cni-plugins-linux-${host_arch}-${CNI_PLUGINS_VERSION}.tgz"
+  cni_plugins_url="${CNI_PLUGINS_URL}/${CNI_PLUGINS_VERSION}/${cni_plugin_tarball}"
+  cni_plugin_sha_url="${cni_plugins_url}.sha256"
+
+  echo "Installing CNI plugin binaries ..." &&
+    cd "${TMP_DIR}" &&
+    curl -sSL --retry 5 -o "${cni_plugin_tarball}" "${cni_plugins_url}" &&
+    curl -sSL --retry 5 -o "${cni_plugin_tarball}.sha256" "${cni_plugin_sha_url}" &&
+    sha256sum -c "${cni_plugin_tarball}.sha256" &&
+    rm -f "${cni_plugin_tarball}.sha256" &&
+    sudo mkdir -p /opt/cni/bin &&
+    sudo tar -C /opt/cni/bin -xzvf "${cni_plugin_tarball}" &&
+    rm -rf "${cni_plugin_tarball}" &&
+    sudo find /opt/cni/bin -type f -not \( \
+        -iname host-local \
+        -o -iname bridge \
+        -o -iname portmap \
+        -o -iname loopback \
+        \) \
+        -delete
+
+  # containerd 1.4.12 installed by docker in kubekins supports CNI version 0.4.0
+  echo "Configuring cni"
+  sudo mkdir -p "$CNI_CONFIG_DIR"
+  cat << EOF | sudo tee "$CNI_CONFIG_DIR"/10-containerd-net.conflist
+{
+ "cniVersion": "1.0.0",
+ "name": "containerd-net",
+ "plugins": [
+   {
+     "type": "bridge",
+     "bridge": "cni0",
+     "isGateway": true,
+     "ipMasq": true,
+     "promiscMode": true,
+     "ipam": {
+       "type": "host-local",
+       "ranges": [
+         [{
+           "subnet": "10.88.0.0/16"
+         }],
+         [{
+           "subnet": "2001:db8:4860::/64"
+         }]
+       ],
+       "routes": [
+         { "dst": "0.0.0.0/0" },
+         { "dst": "::/0" }
+       ]
+     }
+   },
+   {
+     "type": "portmap",
+     "capabilities": {"portMappings": true},
+     "externalSetMarkChain": "KUBE-MARK-MASQ"
+   }
+ ]
+}
+EOF
+}
+
+function install_cni_if_needed {
+  echo "Checking CNI Installation at /opt/cni/bin"
+  if ! command -v /opt/cni/bin/loopback &> /dev/null ; then
+    echo "CNI Installation not found at /opt/cni/bin"
+    install_cni
+  fi
+}
+
 # If we are running in the CI, we need a few more things before we can start
 if [[ "${KUBETEST_IN_DOCKER:-}" == "true" ]]; then
   echo "Preparing to test ..."
@@ -1056,14 +1301,48 @@ if [[ "${KUBETEST_IN_DOCKER:-}" == "true" ]]; then
   export PATH="${KUBE_ROOT}/third_party/etcd:${PATH}"
   KUBE_FASTBUILD=true make ginkgo cross
 
-  apt-get update && apt-get install -y sudo
-  apt-get remove -y systemd
+  # install things we need that are missing from the kubekins image
+  update_packages
 
   # configure shared mounts to prevent failure in DIND scenarios
   mount --make-rshared /
 
   # kubekins has a special directory for docker root
   DOCKER_ROOT="/docker-graph"
+
+  # to use docker installed containerd as kubelet container runtime
+  # we need to enable cri and install cni
+  # install cni for docker in docker
+  install_cni 
+
+  # If we are running in a cgroups v2 environment
+  # we need to enable nesting
+  tolerate_cgroups_v2
+
+  # enable cri for docker in docker
+  echo "enable cri"
+  # shellcheck disable=SC2129
+  echo "DOCKER_OPTS=\"\${DOCKER_OPTS} --cri-containerd\"" >> /etc/default/docker
+
+  # enable debug
+  echo "DOCKER_OPTS=\"\${DOCKER_OPTS} --debug\"" >> /etc/default/docker
+
+  # let's log it where we can grab it later
+  echo "DOCKER_LOGFILE=${LOG_DIR}/docker.log" >> /etc/default/docker
+
+  echo "stopping docker"
+  service docker stop
+
+  # bump up things
+  refresh_docker_containerd_runc
+
+  # check if the new stuff is there
+  docker version
+  containerd --version
+  runc --version
+
+  echo "starting docker"
+  service docker start
 fi
 
 # validate that etcd is: not running, in path, and has minimum required version.
@@ -1084,10 +1363,13 @@ if [ "${GO_OUT}" == "" ]; then
 fi
 echo "Detected host and ready to start services.  Doing some housekeeping first..."
 echo "Using GO_OUT ${GO_OUT}"
-export KUBELET_CIDFILE=/tmp/kubelet.cid
+export KUBELET_CIDFILE=${TMP_DIR}/kubelet.cid
 if [[ "${ENABLE_DAEMON}" = false ]]; then
   trap cleanup EXIT
+  trap cleanup INT
 fi
+
+KUBECTL=$(kube::util::find-binary "kubectl")
 
 echo "Starting services now!"
 if [[ "${START_MODE}" != "kubeletonly" ]]; then
@@ -1103,11 +1385,10 @@ if [[ "${START_MODE}" != "kubeletonly" ]]; then
   if [[ "${ENABLE_NODELOCAL_DNS:-}" == "true" ]]; then
     start_nodelocaldns
   fi
-  start_kubedashboard
   start_csi_snapshotter
 fi
 
-if [[ "${START_MODE}" != "nokubelet" ]]; then
+if [[ "${START_MODE}" != *"nokubelet"* ]]; then
   ## TODO remove this check if/when kubelet is supported on darwin
   # Detect the OS name/arch and display appropriate error.
     case "$(uname -s)" in
@@ -1116,6 +1397,7 @@ if [[ "${START_MODE}" != "nokubelet" ]]; then
         KUBELET_LOG=""
         ;;
       Linux)
+        install_cni_if_needed
         start_kubelet
         ;;
       *)
@@ -1125,7 +1407,7 @@ if [[ "${START_MODE}" != "nokubelet" ]]; then
 fi
 
 if [[ "${START_MODE}" != "kubeletonly" ]]; then
-  if [[ "${START_MODE}" != "nokubeproxy" ]]; then
+  if [[ "${START_MODE}" != *"nokubeproxy"* ]]; then
     ## TODO remove this check if/when kubelet is supported on darwin
     # Detect the OS name/arch and display appropriate error.
     case "$(uname -s)" in
@@ -1134,16 +1416,13 @@ if [[ "${START_MODE}" != "kubeletonly" ]]; then
         ;;
       Linux)
         start_kubeproxy
+        wait_coredns_available
         ;;
       *)
         print_color "Unsupported host OS.  Must be Linux or Mac OS X, kube-proxy aborted."
         ;;
     esac
   fi
-fi
-
-if [[ -n "${PSP_ADMISSION}" && "${AUTHORIZATION_MODE}" = *RBAC* ]]; then
-  create_psp_policy
 fi
 
 if [[ "${DEFAULT_STORAGE_CLASS}" = "true" ]]; then
@@ -1157,8 +1436,8 @@ if [[ "${ENABLE_DAEMON}" = false ]]; then
 fi
 
 if [[ "${KUBETEST_IN_DOCKER:-}" == "true" ]]; then
-  cluster/kubectl.sh config set-cluster local --server=https://localhost:6443 --certificate-authority=/var/run/kubernetes/server-ca.crt
-  cluster/kubectl.sh config set-credentials myself --client-key=/var/run/kubernetes/client-admin.key --client-certificate=/var/run/kubernetes/client-admin.crt
-  cluster/kubectl.sh config set-context local --cluster=local --user=myself
-  cluster/kubectl.sh config use-context local
+  ${KUBECTL} config set-cluster local --server=https://localhost:6443 --certificate-authority=/var/run/kubernetes/server-ca.crt
+  ${KUBECTL} config set-credentials myself --client-key=/var/run/kubernetes/client-admin.key --client-certificate=/var/run/kubernetes/client-admin.crt
+  ${KUBECTL} config set-context local --cluster=local --user=myself
+  ${KUBECTL} config use-context local
 fi

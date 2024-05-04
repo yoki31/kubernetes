@@ -17,7 +17,10 @@ limitations under the License.
 package remote
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,7 +30,6 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e_node/builder"
 	"k8s.io/kubernetes/test/utils"
 )
@@ -35,9 +37,8 @@ import (
 // ConformanceRemote contains the specific functions in the node conformance test suite.
 type ConformanceRemote struct{}
 
-// InitConformanceRemote initializes the node conformance test suite.
-func InitConformanceRemote() TestSuite {
-	return &ConformanceRemote{}
+func init() {
+	RegisterTestSuite("conformance", &ConformanceRemote{})
 }
 
 // getConformanceDirectory gets node conformance test build directory.
@@ -56,7 +57,7 @@ func commandToString(c *exec.Cmd) string {
 
 // Image path constants.
 const (
-	conformanceRegistry         = "k8s.gcr.io"
+	conformanceRegistry         = "registry.k8s.io"
 	conformanceArch             = runtime.GOARCH
 	conformanceTarfile          = "node_conformance.tar"
 	conformanceTestBinary       = "e2e_node.test"
@@ -79,7 +80,7 @@ func buildConformanceTest(binDir, systemSpecName string) error {
 	// Get node conformance directory.
 	conformancePath, err := getConformanceDirectory()
 	if err != nil {
-		return fmt.Errorf("failed to get node conformance directory: %v", err)
+		return fmt.Errorf("failed to get node conformance directory: %w", err)
 	}
 	// Build docker image.
 	cmd := exec.Command("make", "-C", conformancePath, "BIN_DIR="+binDir,
@@ -104,18 +105,18 @@ func buildConformanceTest(binDir, systemSpecName string) error {
 func (c *ConformanceRemote) SetupTestPackage(tardir, systemSpecName string) error {
 	// Build the executables
 	if err := builder.BuildGo(); err != nil {
-		return fmt.Errorf("failed to build the dependencies: %v", err)
+		return fmt.Errorf("failed to build the dependencies: %w", err)
 	}
 
 	// Make sure we can find the newly built binaries
-	buildOutputDir, err := utils.GetK8sBuildOutputDir()
+	buildOutputDir, err := utils.GetK8sBuildOutputDir(builder.IsDockerizedBuild(), builder.GetTargetBuildArch())
 	if err != nil {
 		return fmt.Errorf("failed to locate kubernetes build output directory %v", err)
 	}
 
 	// Build node conformance tarball.
 	if err := buildConformanceTest(buildOutputDir, systemSpecName); err != nil {
-		return fmt.Errorf("failed to build node conformance test: %v", err)
+		return fmt.Errorf("failed to build node conformance test: %w", err)
 	}
 
 	// Copy files
@@ -123,7 +124,7 @@ func (c *ConformanceRemote) SetupTestPackage(tardir, systemSpecName string) erro
 	for _, file := range requiredFiles {
 		source := filepath.Join(buildOutputDir, file)
 		if _, err := os.Stat(source); err != nil {
-			return fmt.Errorf("failed to locate test file %s: %v", file, err)
+			return fmt.Errorf("failed to locate test file %s: %w", file, err)
 		}
 		output, err := exec.Command("cp", source, filepath.Join(tardir, file)).CombinedOutput()
 		if err != nil {
@@ -181,14 +182,14 @@ func launchKubelet(host, workspace, results, testArgs, bearerToken string) error
 		return fmt.Errorf("failed to create kubelet pod manifest path %q: error - %v output - %q",
 			podManifestPath, err, output)
 	}
-	startKubeletCmd := fmt.Sprintf("./%s --run-kubelet-mode --logtostderr --node-name=%s"+
+	startKubeletCmd := fmt.Sprintf("./%s --run-kubelet-mode --node-name=%s"+
 		" --bearer-token=%s"+
 		" --report-dir=%s %s --kubelet-flags=--pod-manifest-path=%s > %s 2>&1",
 		conformanceTestBinary, host, bearerToken, results, testArgs, podManifestPath, filepath.Join(results, kubeletLauncherLog))
 	var cmd []string
 	systemd, err := isSystemd(host)
 	if err != nil {
-		return fmt.Errorf("failed to check systemd: %v", err)
+		return fmt.Errorf("failed to check systemd: %w", err)
 	}
 	if systemd {
 		cmd = []string{
@@ -281,7 +282,7 @@ func (c *ConformanceRemote) RunTest(host, workspace, results, imageDesc, junitFi
 		return "", err
 	}
 
-	bearerToken, err := framework.GenerateSecureToken(16)
+	bearerToken, err := generateSecureToken(16)
 	if err != nil {
 		return "", err
 	}
@@ -304,4 +305,19 @@ func (c *ConformanceRemote) RunTest(host, workspace, results, imageDesc, junitFi
 	cmd := fmt.Sprintf("'timeout -k 30s %fs docker run --rm --privileged=true --net=host -v /:/rootfs -v %s:%s -v %s:/var/result -e TEST_ARGS=--report-prefix=%s -e EXTRA_ENVS=%s -e TEST_ARGS=--bearer-token=%s %s'",
 		timeout.Seconds(), podManifestPath, podManifestPath, results, junitFilePrefix, extraEnvs, bearerToken, getConformanceTestImageName(systemSpecName))
 	return SSH(host, "sh", "-c", cmd)
+}
+
+// generateSecureToken returns a string of length tokenLen, consisting
+// of random bytes encoded as base64 for use as a Bearer Token during
+// communication with an APIServer
+func generateSecureToken(tokenLen int) (string, error) {
+	// Number of bytes to be tokenLen when base64 encoded.
+	tokenSize := math.Ceil(float64(tokenLen) * 6 / 8)
+	rawToken := make([]byte, int(tokenSize))
+	if _, err := rand.Read(rawToken); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(rawToken)
+	token := encoded[:tokenLen]
+	return token, nil
 }

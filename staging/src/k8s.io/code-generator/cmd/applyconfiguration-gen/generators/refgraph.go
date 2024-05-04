@@ -17,7 +17,7 @@ limitations under the License.
 package generators
 
 import (
-	"k8s.io/gengo/types"
+	"k8s.io/gengo/v2/types"
 
 	"k8s.io/code-generator/cmd/client-gen/generators/util"
 )
@@ -86,6 +86,7 @@ func (t refGraph) applyConfigForType(field *types.Type) *types.Type {
 			return &types.Type{
 				Kind: types.Map,
 				Elem: t.applyConfigForType(field.Elem),
+				Key:  t.applyConfigForType(field.Key),
 			}
 		}
 		return field
@@ -170,9 +171,5 @@ func requiresApplyConfiguration(t *types.Type) bool {
 			hasJSONTaggedMembers = true
 		}
 	}
-	if !hasJSONTaggedMembers {
-		return false
-	}
-
-	return true
+	return hasJSONTaggedMembers
 }

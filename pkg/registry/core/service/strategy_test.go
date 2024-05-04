@@ -20,9 +20,11 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/diff"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -31,38 +33,26 @@ import (
 	api "k8s.io/kubernetes/pkg/apis/core"
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
 	"k8s.io/kubernetes/pkg/features"
-	netutils "k8s.io/utils/net"
-	utilpointer "k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
-
-func newStrategy(cidr string, hasSecondary bool) (testStrategy Strategy, testStatusStrategy Strategy) {
-	_, testCIDR, err := netutils.ParseCIDRSloppy(cidr)
-	if err != nil {
-		panic("invalid CIDR")
-	}
-	testStrategy, _ = StrategyForServiceCIDRs(*testCIDR, hasSecondary)
-	testStatusStrategy = NewServiceStatusStrategy(testStrategy)
-	return
-}
 
 func TestCheckGeneratedNameError(t *testing.T) {
 	ctx := genericapirequest.WithRequestInfo(genericapirequest.NewContext(), &genericapirequest.RequestInfo{
 		Resource: "foos",
 	})
 
-	testStrategy, _ := newStrategy("10.0.0.0/16", false)
 	expect := errors.NewNotFound(api.Resource("foos"), "bar")
-	if err := rest.CheckGeneratedNameError(ctx, testStrategy, expect, &api.Service{}); err != expect {
+	if err := rest.CheckGeneratedNameError(ctx, Strategy, expect, &api.Service{}); err != expect {
 		t.Errorf("NotFoundError should be ignored: %v", err)
 	}
 
 	expect = errors.NewAlreadyExists(api.Resource("foos"), "bar")
-	if err := rest.CheckGeneratedNameError(ctx, testStrategy, expect, &api.Service{}); err != expect {
+	if err := rest.CheckGeneratedNameError(ctx, Strategy, expect, &api.Service{}); err != expect {
 		t.Errorf("AlreadyExists should be returned when no GenerateName field: %v", err)
 	}
 
 	expect = errors.NewAlreadyExists(api.Resource("foos"), "bar")
-	if err := rest.CheckGeneratedNameError(ctx, testStrategy, expect, &api.Service{ObjectMeta: metav1.ObjectMeta{GenerateName: "foo"}}); err == nil || !errors.IsAlreadyExists(err) {
+	if err := rest.CheckGeneratedNameError(ctx, Strategy, expect, &api.Service{ObjectMeta: metav1.ObjectMeta{GenerateName: "foo"}}); err == nil || !errors.IsAlreadyExists(err) {
 		t.Errorf("expected try again later error: %v", err)
 	}
 }
@@ -101,7 +91,7 @@ func makeValidServicePort(name string, proto api.Protocol, port int32) api.Servi
 		Name:       name,
 		Protocol:   proto,
 		Port:       port,
-		TargetPort: intstr.FromInt(int(port)),
+		TargetPort: intstr.FromInt32(port),
 	}
 }
 
@@ -114,31 +104,34 @@ func makeValidServiceCustom(tweaks ...func(svc *api.Service)) *api.Service {
 }
 
 func TestServiceStatusStrategy(t *testing.T) {
-	_, testStatusStrategy := newStrategy("10.0.0.0/16", false)
 	ctx := genericapirequest.NewDefaultContext()
-	if !testStatusStrategy.NamespaceScoped() {
+	if !StatusStrategy.NamespaceScoped() {
 		t.Errorf("Service must be namespace scoped")
 	}
 	oldService := makeValidService()
-	newService := makeValidService()
+	oldService.Spec.Type = api.ServiceTypeLoadBalancer
 	oldService.ResourceVersion = "4"
-	newService.ResourceVersion = "4"
+	oldService.Spec.SessionAffinity = "None"
+	newService := oldService.DeepCopy()
 	newService.Spec.SessionAffinity = "ClientIP"
 	newService.Status = api.ServiceStatus{
 		LoadBalancer: api.LoadBalancerStatus{
 			Ingress: []api.LoadBalancerIngress{
-				{IP: "127.0.0.2"},
+				{
+					IP:     "127.0.0.2",
+					IPMode: ptr.To(api.LoadBalancerIPModeVIP),
+				},
 			},
 		},
 	}
-	testStatusStrategy.PrepareForUpdate(ctx, newService, oldService)
+	StatusStrategy.PrepareForUpdate(ctx, newService, oldService)
 	if newService.Status.LoadBalancer.Ingress[0].IP != "127.0.0.2" {
 		t.Errorf("Service status updates should allow change of status fields")
 	}
 	if newService.Spec.SessionAffinity != "None" {
 		t.Errorf("PrepareForUpdate should have preserved old spec")
 	}
-	errs := testStatusStrategy.ValidateUpdate(ctx, newService, oldService)
+	errs := StatusStrategy.ValidateUpdate(ctx, newService, oldService)
 	if len(errs) != 0 {
 		t.Errorf("Unexpected error %v", errs)
 	}
@@ -166,234 +159,67 @@ func makeServiceWithPorts(ports []api.PortStatus) *api.Service {
 	}
 }
 
-func makeServiceWithLoadBalancerClass(loadBalancerClass *string) *api.Service {
-	return &api.Service{
-		Spec: api.ServiceSpec{
-			LoadBalancerClass: loadBalancerClass,
-		},
-	}
-}
-
-func makeServiceWithInternalTrafficPolicy(policy *api.ServiceInternalTrafficPolicyType) *api.Service {
-	return &api.Service{
-		Spec: api.ServiceSpec{
-			InternalTrafficPolicy: policy,
-		},
-	}
-}
-
 func TestDropDisabledField(t *testing.T) {
-	localInternalTrafficPolicy := api.ServiceInternalTrafficPolicyLocal
-
 	testCases := []struct {
-		name                        string
-		enableMixedProtocol         bool
-		enableLoadBalancerClass     bool
-		enableInternalTrafficPolicy bool
-		svc                         *api.Service
-		oldSvc                      *api.Service
-		compareSvc                  *api.Service
+		name       string
+		svc        *api.Service
+		oldSvc     *api.Service
+		compareSvc *api.Service
 	}{
 		/* svc.Status.Conditions */
 		{
-			name:                "mixed protocol not enabled, field not used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions(nil),
+			name:       "mixed protocol enabled, field not used in old, not used in new",
+			svc:        makeServiceWithConditions(nil),
+			oldSvc:     makeServiceWithConditions(nil),
+			compareSvc: makeServiceWithConditions(nil),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old and in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions([]metav1.Condition{}),
+			name:       "mixed protocol enabled, field used in old and in new",
+			svc:        makeServiceWithConditions([]metav1.Condition{}),
+			oldSvc:     makeServiceWithConditions([]metav1.Condition{}),
+			compareSvc: makeServiceWithConditions([]metav1.Condition{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field not used in old, used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions(nil),
+			name:       "mixed protocol enabled, field not used in old, used in new",
+			svc:        makeServiceWithConditions([]metav1.Condition{}),
+			oldSvc:     makeServiceWithConditions(nil),
+			compareSvc: makeServiceWithConditions([]metav1.Condition{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old and in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions([]metav1.Condition{}),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions([]metav1.Condition{}),
-			oldSvc:              makeServiceWithConditions(nil),
-			compareSvc:          makeServiceWithConditions([]metav1.Condition{}),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithConditions(nil),
-			oldSvc:              makeServiceWithConditions([]metav1.Condition{}),
-			compareSvc:          makeServiceWithConditions(nil),
+			name:       "mixed protocol enabled, field used in old, not used in new",
+			svc:        makeServiceWithConditions(nil),
+			oldSvc:     makeServiceWithConditions([]metav1.Condition{}),
+			compareSvc: makeServiceWithConditions(nil),
 		},
 		/* svc.Status.LoadBalancer.Ingress.Ports */
 		{
-			name:                "mixed protocol not enabled, field not used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts(nil),
+			name:       "mixed protocol enabled, field not used in old, not used in new",
+			svc:        makeServiceWithPorts(nil),
+			oldSvc:     makeServiceWithPorts(nil),
+			compareSvc: makeServiceWithPorts(nil),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old and in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts([]api.PortStatus{}),
+			name:       "mixed protocol enabled, field used in old and in new",
+			svc:        makeServiceWithPorts([]api.PortStatus{}),
+			oldSvc:     makeServiceWithPorts([]api.PortStatus{}),
+			compareSvc: makeServiceWithPorts([]api.PortStatus{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field not used in old, used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts(nil),
+			name:       "mixed protocol enabled, field not used in old, used in new",
+			svc:        makeServiceWithPorts([]api.PortStatus{}),
+			oldSvc:     makeServiceWithPorts(nil),
+			compareSvc: makeServiceWithPorts([]api.PortStatus{}),
 		},
 		{
-			name:                "mixed protocol not enabled, field used in old, not used in new",
-			enableMixedProtocol: false,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts(nil),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old and in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts([]api.PortStatus{}),
-		},
-		{
-			name:                "mixed protocol enabled, field not used in old, used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts([]api.PortStatus{}),
-			oldSvc:              makeServiceWithPorts(nil),
-			compareSvc:          makeServiceWithPorts([]api.PortStatus{}),
-		},
-		{
-			name:                "mixed protocol enabled, field used in old, not used in new",
-			enableMixedProtocol: true,
-			svc:                 makeServiceWithPorts(nil),
-			oldSvc:              makeServiceWithPorts([]api.PortStatus{}),
-			compareSvc:          makeServiceWithPorts(nil),
-		},
-		/* svc.Spec.LoadBalancerClass */
-		{
-			name:                    "loadBalancerClass not enabled, field not used in old, not used in new",
-			enableLoadBalancerClass: false,
-			svc:                     makeServiceWithLoadBalancerClass(nil),
-			oldSvc:                  makeServiceWithLoadBalancerClass(nil),
-			compareSvc:              makeServiceWithLoadBalancerClass(nil),
-		},
-		{
-			name:                    "loadBalancerClass not enabled, field used in old and in new",
-			enableLoadBalancerClass: false,
-			svc:                     makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			oldSvc:                  makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			compareSvc:              makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-		},
-		{
-			name:                    "loadBalancerClass not enabled, field not used in old, used in new",
-			enableLoadBalancerClass: false,
-			svc:                     makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			oldSvc:                  makeServiceWithLoadBalancerClass(nil),
-			compareSvc:              makeServiceWithLoadBalancerClass(nil),
-		},
-		{
-			name:                    "loadBalancerClass not enabled, field used in old, not used in new",
-			enableLoadBalancerClass: false,
-			svc:                     makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			oldSvc:                  makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			compareSvc:              makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-		},
-		{
-			name:                    "loadBalancerClass enabled, field not used in old, not used in new",
-			enableLoadBalancerClass: true,
-			svc:                     makeServiceWithLoadBalancerClass(nil),
-			oldSvc:                  makeServiceWithLoadBalancerClass(nil),
-			compareSvc:              makeServiceWithLoadBalancerClass(nil),
-		},
-		{
-			name:                    "loadBalancerClass enabled, field used in old and in new",
-			enableLoadBalancerClass: true,
-			svc:                     makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			oldSvc:                  makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			compareSvc:              makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-		},
-		{
-			name:                    "loadBalancerClass enabled, field not used in old, used in new",
-			enableLoadBalancerClass: true,
-			svc:                     makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			oldSvc:                  makeServiceWithLoadBalancerClass(nil),
-			compareSvc:              makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-		},
-		{
-			name:                    "loadBalancerClass enabled, field used in old, not used in new",
-			enableLoadBalancerClass: true,
-			svc:                     makeServiceWithLoadBalancerClass(nil),
-			oldSvc:                  makeServiceWithLoadBalancerClass(utilpointer.StringPtr("test.com/test")),
-			compareSvc:              makeServiceWithLoadBalancerClass(nil),
-		},
-		/* svc.spec.internalTrafficPolicy */
-		{
-			name:                        "internal traffic policy not enabled, field used in old, not used in new",
-			enableInternalTrafficPolicy: false,
-			svc:                         makeServiceWithInternalTrafficPolicy(nil),
-			oldSvc:                      makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
-			compareSvc:                  makeServiceWithInternalTrafficPolicy(nil),
-		},
-		{
-			name:                        "internal traffic policy not enabled, field not used in old, used in new",
-			enableInternalTrafficPolicy: false,
-			svc:                         makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
-			oldSvc:                      makeServiceWithInternalTrafficPolicy(nil),
-			compareSvc:                  makeServiceWithInternalTrafficPolicy(nil),
-		},
-		{
-			name:                        "internal traffic policy enabled, field not used in old, used in new",
-			enableInternalTrafficPolicy: true,
-			svc:                         makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
-			oldSvc:                      makeServiceWithInternalTrafficPolicy(nil),
-			compareSvc:                  makeServiceWithInternalTrafficPolicy(&localInternalTrafficPolicy),
+			name:       "mixed protocol enabled, field used in old, not used in new",
+			svc:        makeServiceWithPorts(nil),
+			oldSvc:     makeServiceWithPorts([]api.PortStatus{}),
+			compareSvc: makeServiceWithPorts(nil),
 		},
 		/* add more tests for other dropped fields as needed */
 	}
 	for _, tc := range testCases {
 		func() {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.MixedProtocolLBService, tc.enableMixedProtocol)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ServiceLoadBalancerClass, tc.enableLoadBalancerClass)()
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ServiceInternalTrafficPolicy, tc.enableInternalTrafficPolicy)()
 			old := tc.oldSvc.DeepCopy()
 
 			// to test against user using IPFamily not set on cluster
@@ -401,15 +227,260 @@ func TestDropDisabledField(t *testing.T) {
 
 			// old node should never be changed
 			if !reflect.DeepEqual(tc.oldSvc, old) {
-				t.Errorf("%v: old svc changed: %v", tc.name, diff.ObjectReflectDiff(tc.oldSvc, old))
+				t.Errorf("%v: old svc changed: %v", tc.name, cmp.Diff(tc.oldSvc, old))
 			}
 
 			if !reflect.DeepEqual(tc.svc, tc.compareSvc) {
-				t.Errorf("%v: unexpected svc spec: %v", tc.name, diff.ObjectReflectDiff(tc.svc, tc.compareSvc))
+				t.Errorf("%v: unexpected svc spec: %v", tc.name, cmp.Diff(tc.svc, tc.compareSvc))
 			}
 		}()
 	}
 
+}
+
+func TestDropServiceStatusDisabledFields(t *testing.T) {
+	ipModeVIP := api.LoadBalancerIPModeVIP
+	ipModeProxy := api.LoadBalancerIPModeProxy
+
+	testCases := []struct {
+		name          string
+		ipModeEnabled bool
+		svc           *api.Service
+		oldSvc        *api.Service
+		compareSvc    *api.Service
+	}{
+		/*LoadBalancerIPMode disabled*/
+		{
+			name:          "LoadBalancerIPMode disabled, ipMode not used in old, not used in new",
+			ipModeEnabled: false,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+		}, {
+			name:          "LoadBalancerIPMode disabled, ipMode used in old and in new",
+			ipModeEnabled: false,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeProxy,
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeVIP,
+					}},
+				}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeProxy,
+					}},
+				}
+			}),
+		}, {
+			name:          "LoadBalancerIPMode disabled, ipMode not used in old, used in new",
+			ipModeEnabled: false,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeVIP,
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+		}, {
+			name:          "LoadBalancerIPMode disabled, ipMode used in old, not used in new",
+			ipModeEnabled: false,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeProxy,
+					}},
+				}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+		},
+		/*LoadBalancerIPMode enabled*/
+		{
+			name:          "LoadBalancerIPMode enabled, ipMode not used in old, not used in new",
+			ipModeEnabled: true,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+			oldSvc: nil,
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+		}, {
+			name:          "LoadBalancerIPMode enabled, ipMode used in old and in new",
+			ipModeEnabled: true,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeProxy,
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeVIP,
+					}},
+				}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeProxy,
+					}},
+				}
+			}),
+		}, {
+			name:          "LoadBalancerIPMode enabled, ipMode not used in old, used in new",
+			ipModeEnabled: true,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeVIP,
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeVIP,
+					}},
+				}
+			}),
+		}, {
+			name:          "LoadBalancerIPMode enabled, ipMode used in old, not used in new",
+			ipModeEnabled: true,
+			svc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+			oldSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP:     "1.2.3.4",
+						IPMode: &ipModeProxy,
+					}},
+				}
+			}),
+			compareSvc: makeValidServiceCustom(func(svc *api.Service) {
+				svc.Spec.Type = api.ServiceTypeLoadBalancer
+				svc.Status.LoadBalancer = api.LoadBalancerStatus{
+					Ingress: []api.LoadBalancerIngress{{
+						IP: "1.2.3.4",
+					}},
+				}
+			}),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.LoadBalancerIPMode, tc.ipModeEnabled)
+			dropServiceStatusDisabledFields(tc.svc, tc.oldSvc)
+
+			if !reflect.DeepEqual(tc.svc, tc.compareSvc) {
+				t.Errorf("%v: unexpected svc spec: %v", tc.name, cmp.Diff(tc.svc, tc.compareSvc))
+			}
+		})
+	}
 }
 
 func TestDropTypeDependentFields(t *testing.T) {
@@ -444,6 +515,18 @@ func TestDropTypeDependentFields(t *testing.T) {
 			svc.Spec.Ports[i].NodePort += 100
 		}
 	}
+	setExternalIPs := func(svc *api.Service) {
+		svc.Spec.ExternalIPs = []string{"1.1.1.1"}
+	}
+	clearExternalIPs := func(svc *api.Service) {
+		svc.Spec.ExternalIPs = nil
+	}
+	setExternalTrafficPolicyCluster := func(svc *api.Service) {
+		svc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyCluster
+	}
+	clearExternalTrafficPolicy := func(svc *api.Service) {
+		svc.Spec.ExternalTrafficPolicy = ""
+	}
 	clearIPFamilies := func(svc *api.Service) {
 		svc.Spec.IPFamilies = nil
 	}
@@ -468,7 +551,7 @@ func TestDropTypeDependentFields(t *testing.T) {
 		svc.Spec.Ports[0].Protocol = "UDP"
 	}
 	setHCNodePort := func(svc *api.Service) {
-		svc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyTypeLocal
+		svc.Spec.ExternalTrafficPolicy = api.ServiceExternalTrafficPolicyLocal
 		svc.Spec.HealthCheckNodePort = int32(32000)
 	}
 	changeHCNodePort := func(svc *api.Service) {
@@ -482,22 +565,22 @@ func TestDropTypeDependentFields(t *testing.T) {
 		}
 	}
 	setAllocateLoadBalancerNodePortsTrue := func(svc *api.Service) {
-		svc.Spec.AllocateLoadBalancerNodePorts = utilpointer.BoolPtr(true)
+		svc.Spec.AllocateLoadBalancerNodePorts = ptr.To(true)
 	}
 	setAllocateLoadBalancerNodePortsFalse := func(svc *api.Service) {
-		svc.Spec.AllocateLoadBalancerNodePorts = utilpointer.BoolPtr(false)
+		svc.Spec.AllocateLoadBalancerNodePorts = ptr.To(false)
 	}
 	clearAllocateLoadBalancerNodePorts := func(svc *api.Service) {
 		svc.Spec.AllocateLoadBalancerNodePorts = nil
 	}
 	setLoadBalancerClass := func(svc *api.Service) {
-		svc.Spec.LoadBalancerClass = utilpointer.StringPtr("test-load-balancer-class")
+		svc.Spec.LoadBalancerClass = ptr.To("test-load-balancer-class")
 	}
 	clearLoadBalancerClass := func(svc *api.Service) {
 		svc.Spec.LoadBalancerClass = nil
 	}
 	changeLoadBalancerClass := func(svc *api.Service) {
-		svc.Spec.LoadBalancerClass = utilpointer.StringPtr("test-load-balancer-class-changed")
+		svc.Spec.LoadBalancerClass = ptr.To("test-load-balancer-class-changed")
 	}
 
 	testCases := []struct {
@@ -585,7 +668,7 @@ func TestDropTypeDependentFields(t *testing.T) {
 			name:   "don't clear changed healthCheckNodePort",
 			svc:    makeValidServiceCustom(setTypeLoadBalancer, setHCNodePort),
 			patch:  patches(setTypeClusterIP, changeHCNodePort),
-			expect: makeValidServiceCustom(setHCNodePort, changeHCNodePort),
+			expect: makeValidServiceCustom(setHCNodePort, changeHCNodePort, clearExternalTrafficPolicy),
 		}, { // allocatedLoadBalancerNodePorts cases
 			name:   "clear allocatedLoadBalancerNodePorts true -> true",
 			svc:    makeValidServiceCustom(setTypeLoadBalancer, setAllocateLoadBalancerNodePortsTrue),
@@ -656,6 +739,11 @@ func TestDropTypeDependentFields(t *testing.T) {
 			svc:    makeValidServiceCustom(setTypeLoadBalancer, setLoadBalancerClass),
 			patch:  nil,
 			expect: makeValidServiceCustom(setTypeLoadBalancer, setLoadBalancerClass),
+		}, {
+			name:   "clear externalTrafficPolicy when removing externalIPs for Type=ClusterIP",
+			svc:    makeValidServiceCustom(setTypeClusterIP, setExternalIPs, setExternalTrafficPolicyCluster),
+			patch:  patches(clearExternalIPs),
+			expect: makeValidServiceCustom(setTypeClusterIP, clearExternalTrafficPolicy),
 		}}
 
 	for _, tc := range testCases {
@@ -692,6 +780,165 @@ func TestDropTypeDependentFields(t *testing.T) {
 			}
 			if !reflect.DeepEqual(result.Spec.LoadBalancerClass, tc.expect.Spec.LoadBalancerClass) {
 				t.Errorf("failed %q: expected LoadBalancerClass %v, got %v", tc.name, tc.expect.Spec.LoadBalancerClass, result.Spec.LoadBalancerClass)
+			}
+			if !reflect.DeepEqual(result.Spec.ExternalTrafficPolicy, tc.expect.Spec.ExternalTrafficPolicy) {
+				t.Errorf("failed %q: expected ExternalTrafficPolicy %v, got %v", tc.name, tc.expect.Spec.ExternalTrafficPolicy, result.Spec.ExternalTrafficPolicy)
+			}
+		})
+	}
+}
+
+func TestMatchService(t *testing.T) {
+	testCases := []struct {
+		name          string
+		in            *api.Service
+		fieldSelector fields.Selector
+		expectMatch   bool
+	}{
+		{
+			name: "match on name",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=test"),
+			expectMatch:   true,
+		},
+		{
+			name: "match on namespace",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.namespace=testns"),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on name",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.name=nomatch"),
+			expectMatch:   false,
+		},
+		{
+			name: "no match on namespace",
+			in: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test",
+					Namespace: "testns",
+				},
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("metadata.namespace=nomatch"),
+			expectMatch:   false,
+		},
+		{
+			name: "match on loadbalancer type service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{Type: api.ServiceTypeLoadBalancer},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.type=LoadBalancer"),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on nodeport type service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{Type: api.ServiceTypeNodePort},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.type=LoadBalancer"),
+			expectMatch:   false,
+		},
+		{
+			name: "match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=None"),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on clusterIP service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=None"),
+			expectMatch:   false,
+		},
+		{
+			name: "match on clusterIP service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=192.168.1.1"),
+			expectMatch:   true,
+		},
+		{
+			name: "match on non-headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=None"),
+			expectMatch:   true,
+		},
+		{
+			name: "match on any ClusterIP set service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "192.168.1.1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP!=\"\""),
+			expectMatch:   true,
+		},
+		{
+			name: "match on clusterIP IPv6 service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: "2001:db2::1"},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=2001:db2::1"),
+			expectMatch:   true,
+		},
+		{
+			name: "no match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=192.168.1.1"),
+			expectMatch:   false,
+		},
+		{
+			name: "no match on headless service",
+			in: &api.Service{
+				Spec: api.ServiceSpec{ClusterIP: api.ClusterIPNone},
+			},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=2001:db2::1"),
+			expectMatch:   false,
+		},
+		{
+			name:          "no match on empty service",
+			in:            &api.Service{},
+			fieldSelector: fields.ParseSelectorOrDie("spec.clusterIP=None"),
+			expectMatch:   false,
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			m := Matcher(labels.Everything(), testCase.fieldSelector)
+			result, err := m.Matches(testCase.in)
+			if err != nil {
+				t.Errorf("Unexpected error %v", err)
+			}
+			if result != testCase.expectMatch {
+				t.Errorf("Result %v, Expected %v, Selector: %v, Service: %v", result, testCase.expectMatch, testCase.fieldSelector.String(), testCase.in)
 			}
 		})
 	}

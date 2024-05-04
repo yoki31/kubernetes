@@ -18,22 +18,25 @@ package upgrade
 
 import (
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"testing"
 
 	"github.com/pkg/errors"
 
-	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta3"
-	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
+	clientset "k8s.io/client-go/kubernetes"
+
+	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
+	kubeadmapiv1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta4"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/output"
 )
 
 func createTestRunDiffFile(contents []byte) (string, error) {
-	file, err := ioutil.TempFile("", "kubeadm-upgrade-diff-config-*.yaml")
+	file, err := os.CreateTemp("", "kubeadm-upgrade-diff-config-*.yaml")
 	if err != nil {
 		return "", errors.Wrap(err, "failed to create temporary test file")
 	}
-	if _, err := file.Write([]byte(contents)); err != nil {
+	if _, err := file.Write(contents); err != nil {
 		return "", errors.Wrap(err, "failed to write to temporary test file")
 	}
 	if err := file.Close(); err != nil {
@@ -42,19 +45,27 @@ func createTestRunDiffFile(contents []byte) (string, error) {
 	return file.Name(), nil
 }
 
-func TestRunDiff(t *testing.T) {
-	currentVersion := "v" + constants.CurrentKubernetesVersion.String()
+func fakeFetchInitConfig(client clientset.Interface, printer output.Printer, logPrefix string, newControlPlane, skipComponentConfigs bool) (*kubeadmapi.InitConfiguration, error) {
+	return &kubeadmapi.InitConfiguration{
+		ClusterConfiguration: kubeadmapi.ClusterConfiguration{
+			KubernetesVersion: "v1.0.1",
+		},
+	}, nil
+}
 
+func TestRunDiff(t *testing.T) {
 	// create a temporary file with valid ClusterConfiguration
-	testUpgradeDiffConfigContents := []byte(fmt.Sprintf("apiVersion: %s\n"+
-		"kind: ClusterConfiguration\n"+
-		"kubernetesVersion: %s", kubeadmapiv1.SchemeGroupVersion.String(), currentVersion))
+	testUpgradeDiffConfigContents := []byte(fmt.Sprintf(`
+apiVersion: %s
+kind: UpgradeConfiguration
+diff:
+  contextLines: 4`, kubeadmapiv1.SchemeGroupVersion.String()))
+
 	testUpgradeDiffConfig, err := createTestRunDiffFile(testUpgradeDiffConfigContents)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.Remove(testUpgradeDiffConfig)
-
 	// create a temporary manifest file with dummy contents
 	testUpgradeDiffManifestContents := []byte("some-contents")
 	testUpgradeDiffManifest, err := createTestRunDiffFile(testUpgradeDiffManifestContents)
@@ -63,9 +74,16 @@ func TestRunDiff(t *testing.T) {
 	}
 	defer os.Remove(testUpgradeDiffManifest)
 
+	kubeConfigPath, err := createTestRunDiffFile([]byte(testConfigToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	//nolint:errcheck
+	defer os.Remove(kubeConfigPath)
+
 	flags := &diffFlags{
 		cfgPath: "",
-		out:     ioutil.Discard,
+		out:     io.Discard,
 	}
 
 	// TODO: Add test cases for empty cfgPath, it should automatically fetch cfg from cluster
@@ -114,12 +132,14 @@ func TestRunDiff(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			flags.cfgPath = tc.cfgPath
+			flags.kubeConfigPath = kubeConfigPath
+			cmd := newCmdDiff(os.Stdout)
 			if tc.setManifestPath {
 				flags.apiServerManifestPath = tc.manifestPath
 				flags.controllerManagerManifestPath = tc.manifestPath
 				flags.schedulerManifestPath = tc.manifestPath
 			}
-			if err := runDiff(flags, tc.args); (err != nil) != tc.expectedError {
+			if err := runDiff(cmd.Flags(), flags, tc.args, fakeFetchInitConfig); (err != nil) != tc.expectedError {
 				t.Fatalf("expected error: %v, saw: %v, error: %v", tc.expectedError, (err != nil), err)
 			}
 		})

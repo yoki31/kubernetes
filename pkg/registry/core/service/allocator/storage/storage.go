@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/generic"
-	"k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/storage"
 	storeerr "k8s.io/apiserver/pkg/storage/errors"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
@@ -53,6 +52,8 @@ type Etcd struct {
 
 	baseKey  string
 	resource schema.GroupResource
+
+	destroyFn func()
 }
 
 // Etcd implements allocator.Interface and rangeallocation.RangeRegistry
@@ -62,21 +63,20 @@ var _ rangeallocation.RangeRegistry = &Etcd{}
 // NewEtcd returns an allocator that is backed by Etcd and can manage
 // persisting the snapshot state of allocation after each allocation is made.
 func NewEtcd(alloc allocator.Snapshottable, baseKey string, config *storagebackend.ConfigForResource) (*Etcd, error) {
-	storage, d, err := generic.NewRawStorage(config, nil)
+	// note that newFunc, newListFunc and resourcePrefix
+	// can be left blank unless the storage.Watch method is used
+	storage, d, err := generic.NewRawStorage(config, nil, nil, "")
 	if err != nil {
 		return nil, err
 	}
 
-	// TODO : Remove RegisterStorageCleanup below when PR
-	// https://github.com/kubernetes/kubernetes/pull/50690
-	// merges as that shuts down storage properly
-	registry.RegisterStorageCleanup(d)
-
+	var once sync.Once
 	return &Etcd{
-		alloc:    alloc,
-		storage:  storage,
-		baseKey:  baseKey,
-		resource: config.GroupResource,
+		alloc:     alloc,
+		storage:   storage,
+		baseKey:   baseKey,
+		resource:  config.GroupResource,
+		destroyFn: func() { once.Do(d) },
 	}, nil
 }
 
@@ -220,7 +220,7 @@ func (e *Etcd) CreateOrUpdate(snapshot *api.RangeAllocation) error {
 	return err
 }
 
-// Implements allocator.Interface::Has
+// Has implements allocator.Interface::Has
 func (e *Etcd) Has(item int) bool {
 	e.lock.Lock()
 	defer e.lock.Unlock()
@@ -228,10 +228,15 @@ func (e *Etcd) Has(item int) bool {
 	return e.alloc.Has(item)
 }
 
-// Implements allocator.Interface::Free
+// Free implements allocator.Interface::Free
 func (e *Etcd) Free() int {
 	e.lock.Lock()
 	defer e.lock.Unlock()
 
 	return e.alloc.Free()
+}
+
+// Destroy implement allocator.Interface::Destroy
+func (e *Etcd) Destroy() {
+	e.destroyFn()
 }

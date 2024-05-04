@@ -40,7 +40,7 @@ const (
 	defaultNodeAllocatableCgroupName = "kubepods"
 )
 
-//createNodeAllocatableCgroups creates Node Allocatable Cgroup when CgroupsPerQOS flag is specified as true
+// createNodeAllocatableCgroups creates Node Allocatable Cgroup when CgroupsPerQOS flag is specified as true
 func (cm *containerManagerImpl) createNodeAllocatableCgroups() error {
 	nodeAllocatable := cm.internalCapacity
 	// Use Node Allocatable limits instead of capacity if the user requested enforcing node allocatable.
@@ -136,6 +136,9 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 // enforceExistingCgroup updates the limits `rl` on existing cgroup `cName` using `cgroupManager` interface.
 func enforceExistingCgroup(cgroupManager CgroupManager, cName CgroupName, rl v1.ResourceList) error {
 	rp := getCgroupConfig(rl)
+	if rp == nil {
+		return fmt.Errorf("%q cgroup is not configured properly", cName)
+	}
 
 	// Enforce MemoryQoS for cgroups of kube-reserved/system-reserved. For more information,
 	// see https://github.com/kubernetes/enhancements/tree/master/keps/sig-node/2570-memory-qos
@@ -144,7 +147,7 @@ func enforceExistingCgroup(cgroupManager CgroupManager, cName CgroupName, rl v1.
 			if rp.Unified == nil {
 				rp.Unified = make(map[string]string)
 			}
-			rp.Unified[MemoryMin] = strconv.FormatInt(*rp.Memory, 10)
+			rp.Unified[Cgroup2MemoryMin] = strconv.FormatInt(*rp.Memory, 10)
 		}
 	}
 
@@ -152,12 +155,9 @@ func enforceExistingCgroup(cgroupManager CgroupManager, cName CgroupName, rl v1.
 		Name:               cName,
 		ResourceParameters: rp,
 	}
-	if cgroupConfig.ResourceParameters == nil {
-		return fmt.Errorf("%q cgroup is not config properly", cgroupConfig.Name)
-	}
-	klog.V(4).InfoS("Enforcing limits on cgroup", "cgroupName", cName, "cpuShares", cgroupConfig.ResourceParameters.CpuShares, "memory", cgroupConfig.ResourceParameters.Memory, "pidsLimit", cgroupConfig.ResourceParameters.PidsLimit)
-	if !cgroupManager.Exists(cgroupConfig.Name) {
-		return fmt.Errorf("%q cgroup does not exist", cgroupConfig.Name)
+	klog.V(4).InfoS("Enforcing limits on cgroup", "cgroupName", cName, "cpuShares", cgroupConfig.ResourceParameters.CPUShares, "memory", cgroupConfig.ResourceParameters.Memory, "pidsLimit", cgroupConfig.ResourceParameters.PidsLimit)
+	if err := cgroupManager.Validate(cgroupConfig.Name); err != nil {
+		return err
 	}
 	if err := cgroupManager.Update(cgroupConfig); err != nil {
 		return err
@@ -180,7 +180,7 @@ func getCgroupConfig(rl v1.ResourceList) *ResourceConfig {
 	if q, exists := rl[v1.ResourceCPU]; exists {
 		// CPU is defined in milli-cores.
 		val := MilliCPUToShares(q.MilliValue())
-		rc.CpuShares = &val
+		rc.CPUShares = &val
 	}
 	if q, exists := rl[pidlimit.PIDs]; exists {
 		val := q.Value()
@@ -256,7 +256,7 @@ func (cm *containerManagerImpl) validateNodeAllocatable() error {
 		value.Sub(v)
 
 		if value.Sign() < 0 {
-			errors = append(errors, fmt.Sprintf("Resource %q has an allocatable of %v, capacity of %v", k, v, value))
+			errors = append(errors, fmt.Sprintf("Resource %q has a reservation of %v but capacity of %v. Expected capacity >= reservation.", k, v, cm.capacity[k]))
 		}
 	}
 

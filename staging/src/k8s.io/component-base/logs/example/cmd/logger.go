@@ -17,53 +17,57 @@ limitations under the License.
 package main
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/component-base/cli"
+	"k8s.io/component-base/featuregate"
 	"k8s.io/component-base/logs"
+	logsapi "k8s.io/component-base/logs/api/v1"
+	"k8s.io/component-base/logs/example"
 	"k8s.io/klog/v2"
 
 	_ "k8s.io/component-base/logs/json/register"
 )
 
+var featureGate = featuregate.NewFeatureGate()
+
 func main() {
+	runtime.Must(logsapi.AddFeatureGates(featureGate))
 	command := NewLoggerCommand()
 	code := cli.Run(command)
 	os.Exit(code)
 }
 
 func NewLoggerCommand() *cobra.Command {
-	o := logs.NewOptions()
+	c := logsapi.NewLoggingConfiguration()
 	cmd := &cobra.Command{
 		Run: func(cmd *cobra.Command, args []string) {
-			if err := o.ValidateAndApply(); err != nil {
+			logs.InitLogs()
+			if err := logsapi.ValidateAndApply(c, featureGate); err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				os.Exit(1)
 			}
-			runLogger()
+			if len(args) > 0 {
+				fmt.Fprintf(os.Stderr, "Unexpected additional command line arguments:\n    %s\n", strings.Join(args, "\n    "))
+				os.Exit(1)
+			}
+
+			// Initialize contextual logging.
+			logger := klog.LoggerWithValues(klog.LoggerWithName(klog.Background(), "example"), "foo", "bar")
+			ctx := klog.NewContext(context.Background(), logger)
+
+			// Produce some output.
+			example.Run(ctx)
 		},
 	}
-	o.AddFlags(cmd.Flags())
+	logsapi.AddFeatureGates(featureGate)
+	featureGate.AddFlag(cmd.Flags())
+	logsapi.AddFlags(c, cmd.Flags())
 	return cmd
-}
-
-func runLogger() {
-	fmt.Println("This is normal output via stdout.")
-	fmt.Fprintln(os.Stderr, "This is other output via stderr.")
-	klog.Infof("Log using Infof, key: %s", "value")
-	klog.InfoS("Log using InfoS", "key", "value")
-	err := errors.New("fail")
-	klog.Errorf("Log using Errorf, err: %v", err)
-	klog.ErrorS(err, "Log using ErrorS")
-	data := SensitiveData{Key: "secret"}
-	klog.Infof("Log with sensitive key, data: %q", data)
-	klog.V(1).Info("Log less important message")
-}
-
-type SensitiveData struct {
-	Key string `json:"key" datapolicy:"secret-key"`
 }

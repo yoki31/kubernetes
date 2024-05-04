@@ -33,7 +33,7 @@ import (
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 )
 
 // TODO: Cleanup this file.
@@ -63,7 +63,6 @@ var PrePulledImages = sets.NewString(
 	imageutils.GetE2EImage(imageutils.Nginx),
 	imageutils.GetE2EImage(imageutils.Httpd),
 	imageutils.GetE2EImage(imageutils.VolumeNFSServer),
-	imageutils.GetE2EImage(imageutils.VolumeGlusterServer),
 	imageutils.GetE2EImage(imageutils.NonRoot),
 )
 
@@ -133,7 +132,7 @@ func svcByName(name string, port int) *v1.Service {
 			},
 			Ports: []v1.ServicePort{{
 				Port:       int32(port),
-				TargetPort: intstr.FromInt(port),
+				TargetPort: intstr.FromInt32(int32(port)),
 			}},
 		},
 	}
@@ -155,7 +154,7 @@ func NewRCByName(c clientset.Interface, ns, name string, replicas int32, gracePe
 	}
 
 	return c.CoreV1().ReplicationControllers(ns).Create(context.TODO(), rcByNamePort(
-		name, replicas, framework.ServeHostnameImage, containerArgs, 9376, v1.ProtocolTCP, map[string]string{}, gracePeriod), metav1.CreateOptions{})
+		name, replicas, imageutils.GetE2EImage(imageutils.Agnhost), containerArgs, 9376, v1.ProtocolTCP, map[string]string{}, gracePeriod), metav1.CreateOptions{})
 }
 
 // RestartNodes restarts specific nodes.
@@ -195,11 +194,11 @@ func RestartNodes(c clientset.Interface, nodes []v1.Node) error {
 		if err := wait.Poll(30*time.Second, framework.RestartNodeReadyAgainTimeout, func() (bool, error) {
 			newNode, err := c.CoreV1().Nodes().Get(context.TODO(), node.Name, metav1.GetOptions{})
 			if err != nil {
-				return false, fmt.Errorf("error getting node info after reboot: %s", err)
+				return false, fmt.Errorf("error getting node info after reboot: %w", err)
 			}
 			return node.Status.NodeInfo.BootID != newNode.Status.NodeInfo.BootID, nil
 		}); err != nil {
-			return fmt.Errorf("error waiting for node %s boot ID to change: %s", node.Name, err)
+			return fmt.Errorf("error waiting for node %s boot ID to change: %w", node.Name, err)
 		}
 	}
 	return nil

@@ -30,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	clientset "k8s.io/client-go/kubernetes"
@@ -88,13 +89,13 @@ func newCacheBasedSecretManager(store Store) Manager {
 func TestSecretStore(t *testing.T) {
 	fakeClient := &fake.Clientset{}
 	store := newSecretStore(fakeClient, clock.RealClock{}, noObjectTTL, 0)
-	store.AddReference("ns1", "name1")
-	store.AddReference("ns2", "name2")
-	store.AddReference("ns1", "name1")
-	store.AddReference("ns1", "name1")
-	store.DeleteReference("ns1", "name1")
-	store.DeleteReference("ns2", "name2")
-	store.AddReference("ns3", "name3")
+	store.AddReference("ns1", "name1", "pod1")
+	store.AddReference("ns2", "name2", "pod2")
+	store.AddReference("ns1", "name1", "pod3")
+	store.AddReference("ns1", "name1", "pod4")
+	store.DeleteReference("ns1", "name1", "pod1")
+	store.DeleteReference("ns2", "name2", "pod2")
+	store.AddReference("ns3", "name3", "pod5")
 
 	// Adds don't issue Get requests.
 	actions := fakeClient.Actions()
@@ -122,7 +123,7 @@ func TestSecretStore(t *testing.T) {
 func TestSecretStoreDeletingSecret(t *testing.T) {
 	fakeClient := &fake.Clientset{}
 	store := newSecretStore(fakeClient, clock.RealClock{}, noObjectTTL, 0)
-	store.AddReference("ns", "name")
+	store.AddReference("ns", "name", "pod")
 
 	result := &v1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "name", ResourceVersion: "10"}}
 	fakeClient.AddReactor("get", "secrets", func(action core.Action) (bool, runtime.Object, error) {
@@ -154,7 +155,7 @@ func TestSecretStoreGetAlwaysRefresh(t *testing.T) {
 	store := newSecretStore(fakeClient, fakeClock, noObjectTTL, 0)
 
 	for i := 0; i < 10; i++ {
-		store.AddReference(fmt.Sprintf("ns-%d", i), fmt.Sprintf("name-%d", i))
+		store.AddReference(fmt.Sprintf("ns-%d", i), fmt.Sprintf("name-%d", i), types.UID(fmt.Sprintf("pod-%d", i)))
 	}
 	fakeClient.ClearActions()
 
@@ -181,7 +182,7 @@ func TestSecretStoreGetNeverRefresh(t *testing.T) {
 	store := newSecretStore(fakeClient, fakeClock, noObjectTTL, time.Minute)
 
 	for i := 0; i < 10; i++ {
-		store.AddReference(fmt.Sprintf("ns-%d", i), fmt.Sprintf("name-%d", i))
+		store.AddReference(fmt.Sprintf("ns-%d", i), fmt.Sprintf("name-%d", i), types.UID(fmt.Sprintf("pod-%d", i)))
 	}
 	fakeClient.ClearActions()
 
@@ -210,7 +211,7 @@ func TestCustomTTL(t *testing.T) {
 	fakeClock := testingclock.NewFakeClock(time.Time{})
 	store := newSecretStore(fakeClient, fakeClock, customTTL, time.Minute)
 
-	store.AddReference("ns", "name")
+	store.AddReference("ns", "name", "pod")
 	store.Get("ns", "name")
 	fakeClient.ClearActions()
 
@@ -335,10 +336,15 @@ type secretsToAttach struct {
 }
 
 func podWithSecrets(ns, podName string, toAttach secretsToAttach) *v1.Pod {
+	return podWithSecretsAndUID(ns, podName, fmt.Sprintf("%s/%s", ns, podName), toAttach)
+}
+
+func podWithSecretsAndUID(ns, podName, podUID string, toAttach secretsToAttach) *v1.Pod {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      podName,
+			UID:       types.UID(podUID),
 		},
 		Spec: v1.PodSpec{},
 	}
@@ -409,13 +415,13 @@ func TestCacheInvalidation(t *testing.T) {
 		},
 	}
 	manager.RegisterPod(podWithSecrets("ns1", "name1", s2))
-	// All secrets should be invalidated - this should trigger get operations.
+	// Fetch only s3 and s20 secrets - this should trigger get operations.
 	store.Get("ns1", "s1")
 	store.Get("ns1", "s2")
 	store.Get("ns1", "s20")
 	store.Get("ns1", "s3")
 	actions = fakeClient.Actions()
-	assert.Equal(t, 4, len(actions), "unexpected actions: %#v", actions)
+	assert.Equal(t, 2, len(actions), "unexpected actions: %#v", actions)
 	fakeClient.ClearActions()
 
 	// Create a new pod that is refencing the first three secrets - those should
@@ -444,7 +450,7 @@ func TestRegisterIdempotence(t *testing.T) {
 	refs := func(ns, name string) int {
 		store.lock.Lock()
 		defer store.lock.Unlock()
-		item, ok := store.items[objectKey{ns, name}]
+		item, ok := store.items[objectKey{namespace: ns, name: name}]
 		if !ok {
 			return 0
 		}
@@ -531,7 +537,7 @@ func TestCacheRefcounts(t *testing.T) {
 	refs := func(ns, name string) int {
 		store.lock.Lock()
 		defer store.lock.Unlock()
-		item, ok := store.items[objectKey{ns, name}]
+		item, ok := store.items[objectKey{namespace: ns, name: name}]
 		if !ok {
 			return 0
 		}
@@ -549,6 +555,42 @@ func TestCacheRefcounts(t *testing.T) {
 	assert.Equal(t, 0, refs("ns1", "s60"))
 	assert.Equal(t, 1, refs("ns1", "s7"))
 	assert.Equal(t, 1, refs("ns1", "s70"))
+
+	// Check the interleaved registerpod/unregisterpod with identical names and different uids scenario
+	secret1 := secretsToAttach{
+		containerEnvSecrets: []envSecrets{
+			{envVarNames: []string{"secret1"}},
+		},
+	}
+	secret2 := secretsToAttach{
+		containerEnvSecrets: []envSecrets{
+			{envVarNames: []string{"secret2"}},
+		},
+	}
+
+	// precondition: no references
+	assert.Equal(t, 0, refs("nsinterleaved", "secret1"))
+	assert.Equal(t, 0, refs("nsinterleaved", "secret2"))
+
+	// add first pod that references secret1 only
+	manager.RegisterPod(podWithSecretsAndUID("nsinterleaved", "pod", "poduid1", secret1))
+	assert.Equal(t, 1, refs("nsinterleaved", "secret1"))
+	assert.Equal(t, 0, refs("nsinterleaved", "secret2"))
+
+	// add second pod that references secret2 only, retain references to secret1
+	manager.RegisterPod(podWithSecretsAndUID("nsinterleaved", "pod", "poduid2", secret2))
+	assert.Equal(t, 1, refs("nsinterleaved", "secret1"))
+	assert.Equal(t, 1, refs("nsinterleaved", "secret2"))
+
+	// remove first pod that references secret1, retain references to secret2
+	manager.UnregisterPod(podWithSecretsAndUID("nsinterleaved", "pod", "poduid1", secretsToAttach{}))
+	assert.Equal(t, 0, refs("nsinterleaved", "secret1"))
+	assert.Equal(t, 1, refs("nsinterleaved", "secret2"))
+
+	// remove second pod that references secret2
+	manager.UnregisterPod(podWithSecretsAndUID("nsinterleaved", "pod", "poduid2", secretsToAttach{}))
+	assert.Equal(t, 0, refs("nsinterleaved", "secret1"))
+	assert.Equal(t, 0, refs("nsinterleaved", "secret2"))
 }
 
 func TestCacheBasedSecretManager(t *testing.T) {

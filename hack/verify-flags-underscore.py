@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # Copyright 2015 The Kubernetes Authors.
 #
@@ -13,8 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from __future__ import print_function
 
 import argparse
 import os
@@ -56,16 +54,10 @@ def get_all_files(rootdir):
             dirs.remove('staging')
         if '_output' in dirs:
             dirs.remove('_output')
-        if '_gopath' in dirs:
-            dirs.remove('_gopath')
         if 'third_party' in dirs:
             dirs.remove('third_party')
         if '.git' in dirs:
             dirs.remove('.git')
-        if '.make' in dirs:
-            dirs.remove('.make')
-        if 'BUILD' in files:
-           files.remove('BUILD')
 
         for name in files:
             pathname = os.path.join(root, name)
@@ -111,7 +103,7 @@ def check_underscore_in_flags(rootdir, files):
         print("Are you certain this flag should not have been declared with an - instead?")
         l = list(new_excluded_flags)
         l.sort()
-        print("%s" % "\n".join(l))
+        print(("%s" % "\n".join(l)))
         sys.exit(1)
 
 def main():

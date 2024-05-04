@@ -25,7 +25,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"os"
 	"path"
@@ -44,6 +43,7 @@ import (
 	"k8s.io/component-base/cli/flag"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
 	"k8s.io/kubernetes/test/integration/framework"
+	"k8s.io/kubernetes/test/utils/ktesting"
 )
 
 type caWithClient struct {
@@ -136,8 +136,7 @@ func TestClientCARecreate(t *testing.T) {
 }
 
 func testClientCA(t *testing.T, recreate bool) {
-	stopCh := make(chan struct{})
-	defer close(stopCh)
+	tCtx := ktesting.Init(t)
 
 	frontProxyCA, err := newTestCAWithClient(
 		pkix.Name{
@@ -174,7 +173,7 @@ func testClientCA(t *testing.T, recreate bool) {
 	clientCAFilename := ""
 	frontProxyCAFilename := ""
 
-	kubeClient, kubeconfig := framework.StartTestServer(t, stopCh, framework.TestServerSetup{
+	kubeClient, kubeconfig, tearDownFn := framework.StartTestServer(tCtx, t, framework.TestServerSetup{
 		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
 			opts.GenericServerRunOptions.MaxRequestBodyBytes = 1024 * 1024
 			clientCAFilename = opts.Authentication.ClientCert.ClientCA
@@ -182,6 +181,7 @@ func testClientCA(t *testing.T, recreate bool) {
 			opts.Authentication.RequestHeader.AllowedNames = append(opts.Authentication.RequestHeader.AllowedNames, "test-aggregated-apiserver")
 		},
 	})
+	defer tearDownFn()
 
 	// wait for request header info
 	err = wait.PollImmediate(100*time.Millisecond, 30*time.Second, waitForConfigMapCAContent(t, kubeClient, "requestheader-client-ca-file", "-----BEGIN CERTIFICATE-----", 1))
@@ -204,10 +204,10 @@ func testClientCA(t *testing.T, recreate bool) {
 	}
 
 	// when we run this the second time, we know which one we are expecting
-	if err := ioutil.WriteFile(clientCAFilename, clientCA.CACert, 0644); err != nil {
+	if err := os.WriteFile(clientCAFilename, clientCA.CACert, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ioutil.WriteFile(frontProxyCAFilename, frontProxyCA.CACert, 0644); err != nil {
+	if err := os.WriteFile(frontProxyCAFilename, frontProxyCA.CACert, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -303,7 +303,7 @@ func testClientCA(t *testing.T, recreate bool) {
 	}
 
 	// Call an endpoint to make sure we are authenticated
-	_, err = testClient.CoreV1().Nodes().List(context.Background(), metav1.ListOptions{})
+	_, err = testClient.CoreV1().Nodes().List(tCtx, metav1.ListOptions{})
 	if err != nil {
 		t.Error(err)
 	}
@@ -471,17 +471,17 @@ func TestServingCertRecreate(t *testing.T) {
 }
 
 func testServingCert(t *testing.T, recreate bool) {
-	stopCh := make(chan struct{})
-	defer close(stopCh)
+	tCtx := ktesting.Init(t)
 
 	var servingCertPath string
 
-	_, kubeconfig := framework.StartTestServer(t, stopCh, framework.TestServerSetup{
+	_, kubeconfig, tearDownFn := framework.StartTestServer(tCtx, t, framework.TestServerSetup{
 		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
 			opts.GenericServerRunOptions.MaxRequestBodyBytes = 1024 * 1024
 			servingCertPath = opts.SecureServing.ServerCert.CertDirectory
 		},
 	})
+	defer tearDownFn()
 
 	if recreate {
 		if err := os.Remove(path.Join(servingCertPath, "apiserver.key")); err != nil {
@@ -492,10 +492,10 @@ func testServingCert(t *testing.T, recreate bool) {
 		}
 	}
 
-	if err := ioutil.WriteFile(path.Join(servingCertPath, "apiserver.key"), serverKey, 0644); err != nil {
+	if err := os.WriteFile(path.Join(servingCertPath, "apiserver.key"), serverKey, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ioutil.WriteFile(path.Join(servingCertPath, "apiserver.crt"), serverCert, 0644); err != nil {
+	if err := os.WriteFile(path.Join(servingCertPath, "apiserver.crt"), serverCert, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -512,20 +512,19 @@ func testServingCert(t *testing.T, recreate bool) {
 }
 
 func TestSNICert(t *testing.T) {
-	stopCh := make(chan struct{})
-	defer close(stopCh)
-
 	var servingCertPath string
 
-	_, kubeconfig := framework.StartTestServer(t, stopCh, framework.TestServerSetup{
+	tCtx := ktesting.Init(t)
+
+	_, kubeconfig, tearDownFn := framework.StartTestServer(tCtx, t, framework.TestServerSetup{
 		ModifyServerRunOptions: func(opts *options.ServerRunOptions) {
 			opts.GenericServerRunOptions.MaxRequestBodyBytes = 1024 * 1024
 			servingCertPath = opts.SecureServing.ServerCert.CertDirectory
 
-			if err := ioutil.WriteFile(path.Join(servingCertPath, "foo.key"), anotherServerKey, 0644); err != nil {
+			if err := os.WriteFile(path.Join(servingCertPath, "foo.key"), anotherServerKey, 0644); err != nil {
 				t.Fatal(err)
 			}
-			if err := ioutil.WriteFile(path.Join(servingCertPath, "foo.crt"), anotherServerCert, 0644); err != nil {
+			if err := os.WriteFile(path.Join(servingCertPath, "foo.crt"), anotherServerCert, 0644); err != nil {
 				t.Fatal(err)
 			}
 
@@ -536,6 +535,7 @@ func TestSNICert(t *testing.T) {
 			}}
 		},
 	})
+	defer tearDownFn()
 
 	// When we run this the second time, we know which one we are expecting.
 	_, actualCerts, err := cert.GetServingCertificatesForURL(kubeconfig.Host, "foo")
@@ -546,10 +546,10 @@ func TestSNICert(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := ioutil.WriteFile(path.Join(servingCertPath, "foo.key"), serverKey, 0644); err != nil {
+	if err := os.WriteFile(path.Join(servingCertPath, "foo.key"), serverKey, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ioutil.WriteFile(path.Join(servingCertPath, "foo.crt"), serverCert, 0644); err != nil {
+	if err := os.WriteFile(path.Join(servingCertPath, "foo.crt"), serverCert, 0644); err != nil {
 		t.Fatal(err)
 	}
 

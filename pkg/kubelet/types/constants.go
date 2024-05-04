@@ -25,12 +25,6 @@ const (
 	RFC3339NanoLenient = "2006-01-02T15:04:05.999999999Z07:00"
 )
 
-// Different container runtimes.
-const (
-	DockerContainerRuntime = "docker"
-	RemoteContainerRuntime = "remote"
-)
-
 // User visible keys for managing node allocatable enforcement on the node.
 const (
 	NodeAllocatableEnforcementKey = "pods"
@@ -41,6 +35,6 @@ const (
 
 // SwapBehavior types
 const (
-	LimitedSwap   = "LimitedSwap"
-	UnlimitedSwap = "UnlimitedSwap"
+	LimitedSwap = "LimitedSwap"
+	NoSwap      = "NoSwap"
 )

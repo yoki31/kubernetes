@@ -1,3 +1,6 @@
+//go:build !providerless
+// +build !providerless
+
 /*
 Copyright 2017 The Kubernetes Authors.
 
@@ -25,14 +28,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/kubernetes/test/e2e/feature"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2egpu "k8s.io/kubernetes/test/e2e/framework/gpu"
+	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	instrumentation "k8s.io/kubernetes/test/e2e/instrumentation/common"
 	"k8s.io/kubernetes/test/e2e/scheduling"
 	"k8s.io/kubernetes/test/utils/image"
+	admissionapi "k8s.io/pod-security-admission/api"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"golang.org/x/oauth2/google"
 	gcm "google.golang.org/api/monitoring/v3"
 	"google.golang.org/api/option"
@@ -52,17 +58,17 @@ var _ = instrumentation.SIGDescribe("Stackdriver Monitoring", func() {
 	})
 
 	f := framework.NewDefaultFramework("stackdriver-monitoring")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 
-	ginkgo.It("should have accelerator metrics [Feature:StackdriverAcceleratorMonitoring]", func() {
-		testStackdriverAcceleratorMonitoring(f)
+	f.It("should have accelerator metrics", feature.StackdriverAcceleratorMonitoring, func(ctx context.Context) {
+		testStackdriverAcceleratorMonitoring(ctx, f)
 	})
 
 })
 
-func testStackdriverAcceleratorMonitoring(f *framework.Framework) {
+func testStackdriverAcceleratorMonitoring(ctx context.Context, f *framework.Framework) {
 	projectID := framework.TestContext.CloudConfig.ProjectID
 
-	ctx := context.Background()
 	client, err := google.DefaultClient(ctx, gcm.CloudPlatformScope)
 	framework.ExpectNoError(err)
 
@@ -77,9 +83,9 @@ func testStackdriverAcceleratorMonitoring(f *framework.Framework) {
 		gcmService.BasePath = basePathOverride
 	}
 
-	scheduling.SetupNVIDIAGPUNode(f, false)
+	scheduling.SetupNVIDIAGPUNode(ctx, f, false)
 
-	f.PodClient().Create(&v1.Pod{
+	e2epod.NewPodClient(f).Create(ctx, &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: rcName,
 		},

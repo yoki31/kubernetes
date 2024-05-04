@@ -23,8 +23,14 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	"k8s.io/kubernetes/pkg/features"
+
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -38,6 +44,7 @@ import (
 	"k8s.io/kubernetes/pkg/apis/coordination"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/policy"
+	resourceapi "k8s.io/kubernetes/pkg/apis/resource"
 	storage "k8s.io/kubernetes/pkg/apis/storage"
 	"k8s.io/kubernetes/pkg/auth/nodeidentifier"
 	"k8s.io/utils/pointer"
@@ -291,8 +298,8 @@ func Test_nodePlugin_Admit(t *testing.T) {
 				Namespace: api.NamespaceNodeLease,
 			},
 			Spec: coordination.LeaseSpec{
-				HolderIdentity:       pointer.StringPtr("mynode"),
-				LeaseDurationSeconds: pointer.Int32Ptr(40),
+				HolderIdentity:       pointer.String("mynode"),
+				LeaseDurationSeconds: pointer.Int32(40),
 				RenewTime:            &metav1.MicroTime{Time: time.Now()},
 			},
 		}
@@ -302,8 +309,8 @@ func Test_nodePlugin_Admit(t *testing.T) {
 				Namespace: "foo",
 			},
 			Spec: coordination.LeaseSpec{
-				HolderIdentity:       pointer.StringPtr("mynode"),
-				LeaseDurationSeconds: pointer.Int32Ptr(40),
+				HolderIdentity:       pointer.String("mynode"),
+				LeaseDurationSeconds: pointer.Int32(40),
 				RenewTime:            &metav1.MicroTime{Time: time.Now()},
 			},
 		}
@@ -313,8 +320,8 @@ func Test_nodePlugin_Admit(t *testing.T) {
 				Namespace: api.NamespaceNodeLease,
 			},
 			Spec: coordination.LeaseSpec{
-				HolderIdentity:       pointer.StringPtr("mynode"),
-				LeaseDurationSeconds: pointer.Int32Ptr(40),
+				HolderIdentity:       pointer.String("mynode"),
+				LeaseDurationSeconds: pointer.Int32(40),
 				RenewTime:            &metav1.MicroTime{Time: time.Now()},
 			},
 		}
@@ -387,6 +394,9 @@ func Test_nodePlugin_Admit(t *testing.T) {
 
 	configmappod, _ := makeTestPod("ns", "myconfigmappod", "mynode", true)
 	configmappod.Spec.Volumes = []api.Volume{{VolumeSource: api.VolumeSource{ConfigMap: &api.ConfigMapVolumeSource{LocalObjectReference: api.LocalObjectReference{Name: "foo"}}}}}
+
+	ctbpod, _ := makeTestPod("ns", "myctbpod", "mynode", true)
+	ctbpod.Spec.Volumes = []api.Volume{{VolumeSource: api.VolumeSource{Projected: &api.ProjectedVolumeSource{Sources: []api.VolumeProjection{{ClusterTrustBundle: &api.ClusterTrustBundleProjection{Name: pointer.String("foo")}}}}}}}
 
 	pvcpod, _ := makeTestPod("ns", "mypvcpod", "mynode", true)
 	pvcpod.Spec.Volumes = []api.Volume{{VolumeSource: api.VolumeSource{PersistentVolumeClaim: &api.PersistentVolumeClaimVolumeSource{ClaimName: "foo"}}}}
@@ -859,6 +869,12 @@ func Test_nodePlugin_Admit(t *testing.T) {
 			podsGetter: noExistingPods,
 			attributes: admission.NewAttributesRecord(configmappod, nil, podKind, configmappod.Namespace, configmappod.Name, podResource, "", admission.Create, &metav1.CreateOptions{}, false, mynode),
 			err:        "reference configmaps",
+		},
+		{
+			name:       "forbid create of pod referencing clustertrustbundle",
+			podsGetter: noExistingPods,
+			attributes: admission.NewAttributesRecord(ctbpod, nil, podKind, ctbpod.Namespace, ctbpod.Name, podResource, "", admission.Create, &metav1.CreateOptions{}, false, mynode),
+			err:        "reference clustertrustbundles",
 		},
 		{
 			name:       "forbid create of pod referencing persistentvolumeclaim",
@@ -1424,8 +1440,246 @@ func Test_getModifiedLabels(t *testing.T) {
 	}
 }
 
+func TestAdmitPVCStatus(t *testing.T) {
+	expectedNodeIndex := cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+	expectedNodeIndex.Add(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "mynode", UID: "mynode-uid"}})
+	expectedNode := corev1lister.NewNodeLister(expectedNodeIndex)
+	noExistingPodsIndex := cache.NewIndexer(cache.MetaNamespaceKeyFunc, nil)
+	noExistingPods := corev1lister.NewPodLister(noExistingPodsIndex)
+	mynode := &user.DefaultInfo{Name: "system:node:mynode", Groups: []string{"system:nodes"}}
+
+	nodeExpansionFailed := api.PersistentVolumeClaimNodeResizeFailed
+
+	tests := []struct {
+		name                    string
+		resource                schema.GroupVersionResource
+		subresource             string
+		newObj                  runtime.Object
+		oldObj                  runtime.Object
+		expansionFeatureEnabled bool
+		recoveryFeatureEnabled  bool
+		expectError             string
+	}{
+		{
+			name: "should not allow full pvc update from nodes",
+			oldObj: makeTestPVC(
+				api.PersistentVolumeClaimResizing,
+				"10G", nil,
+			),
+			subresource: "",
+			newObj: makeTestPVC(
+				"", "10G", nil,
+			),
+			expectError: "is forbidden: may only update PVC status",
+		},
+		{
+			name: "should allow capacity and condition updates, if expansion is enabled",
+			oldObj: makeTestPVC(
+				api.PersistentVolumeClaimResizing,
+				"10G", nil,
+			),
+			expansionFeatureEnabled: true,
+			subresource:             "status",
+			newObj: makeTestPVC(
+				api.PersistentVolumeClaimFileSystemResizePending,
+				"10G", nil,
+			),
+			expectError: "",
+		},
+		{
+			name: "should not allow updates to allocatedResources with just expansion enabled",
+			oldObj: makeTestPVC(
+				api.PersistentVolumeClaimResizing,
+				"10G", nil,
+			),
+			subresource:             "status",
+			expansionFeatureEnabled: true,
+			newObj: makeTestPVC(
+				api.PersistentVolumeClaimFileSystemResizePending,
+				"15G", nil,
+			),
+			expectError: "is not allowed to update fields other than",
+		},
+		{
+			name: "should allow updates to allocatedResources with expansion and recovery enabled",
+			oldObj: makeTestPVC(
+				api.PersistentVolumeClaimResizing,
+				"10G", nil,
+			),
+			subresource:             "status",
+			expansionFeatureEnabled: true,
+			recoveryFeatureEnabled:  true,
+			newObj: makeTestPVC(
+				api.PersistentVolumeClaimFileSystemResizePending,
+				"15G", nil,
+			),
+			expectError: "",
+		},
+		{
+			name: "should allow updates to resizeStatus with expansion and recovery enabled",
+			oldObj: makeTestPVC(
+				api.PersistentVolumeClaimResizing,
+				"10G", nil,
+			),
+			subresource:             "status",
+			expansionFeatureEnabled: true,
+			recoveryFeatureEnabled:  true,
+			newObj: makeTestPVC(
+				api.PersistentVolumeClaimResizing,
+				"10G", &nodeExpansionFailed,
+			),
+			expectError: "",
+		},
+	}
+
+	for i := range tests {
+		test := tests[i]
+		t.Run(test.name, func(t *testing.T) {
+			operation := admission.Update
+			apiResource := api.SchemeGroupVersion.WithResource("persistentvolumeclaims")
+			attributes := admission.NewAttributesRecord(
+				test.newObj, test.oldObj, schema.GroupVersionKind{},
+				metav1.NamespaceDefault, "foo", apiResource, test.subresource, operation, &metav1.CreateOptions{}, false, mynode)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.RecoverVolumeExpansionFailure, test.recoveryFeatureEnabled)
+			a := &admitTestCase{
+				name:        test.name,
+				podsGetter:  noExistingPods,
+				nodesGetter: expectedNode,
+				attributes:  attributes,
+				features:    feature.DefaultFeatureGate,
+				err:         test.expectError,
+			}
+			a.run(t)
+		})
+
+	}
+}
+
+func makeTestPVC(
+	condition api.PersistentVolumeClaimConditionType,
+	allocatedResources string,
+	resizeStatus *api.ClaimResourceStatus) *api.PersistentVolumeClaim {
+	pvc := &api.PersistentVolumeClaim{
+		Spec: api.PersistentVolumeClaimSpec{
+			VolumeName: "volume1",
+			Resources: api.VolumeResourceRequirements{
+				Requests: api.ResourceList{
+					api.ResourceStorage: resource.MustParse("10G"),
+				},
+			},
+		},
+		Status: api.PersistentVolumeClaimStatus{
+			Capacity: api.ResourceList{
+				api.ResourceStorage: resource.MustParse(allocatedResources),
+			},
+			Phase: api.ClaimBound,
+			AllocatedResources: api.ResourceList{
+				api.ResourceStorage: resource.MustParse(allocatedResources),
+			},
+		},
+	}
+	if resizeStatus != nil {
+		claimStatusMap := map[api.ResourceName]api.ClaimResourceStatus{
+			api.ResourceStorage: *resizeStatus,
+		}
+		pvc.Status.AllocatedResourceStatuses = claimStatusMap
+	}
+
+	if len(condition) > 0 {
+		pvc.Status.Conditions = []api.PersistentVolumeClaimCondition{
+			{
+				Type:   condition,
+				Status: api.ConditionTrue,
+			},
+		}
+	}
+
+	return pvc
+}
+
 func createPodAttributes(pod *api.Pod, user user.Info) admission.Attributes {
 	podResource := api.Resource("pods").WithVersion("v1")
 	podKind := api.Kind("Pod").WithVersion("v1")
 	return admission.NewAttributesRecord(pod, nil, podKind, pod.Namespace, pod.Name, podResource, "", admission.Create, &metav1.CreateOptions{}, false, user)
+}
+
+func TestAdmitResourceSlice(t *testing.T) {
+	apiResource := resourceapi.SchemeGroupVersion.WithResource("resourceslices")
+	nodename := "mynode"
+	mynode := &user.DefaultInfo{Name: "system:node:" + nodename, Groups: []string{"system:nodes"}}
+	err := "can only create ResourceSlice with the same NodeName as the requesting node"
+
+	sliceNode := &resourceapi.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "something",
+		},
+		NodeName: nodename,
+	}
+	sliceOtherNode := &resourceapi.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "something",
+		},
+		NodeName: nodename + "-other",
+	}
+
+	tests := map[string]struct {
+		operation      admission.Operation
+		obj            runtime.Object
+		featureEnabled bool
+		expectError    string
+	}{
+		"create allowed, enabled": {
+			operation:      admission.Create,
+			obj:            sliceNode,
+			featureEnabled: true,
+			expectError:    "",
+		},
+		"create disallowed, enabled": {
+			operation:      admission.Create,
+			obj:            sliceOtherNode,
+			featureEnabled: true,
+			expectError:    err,
+		},
+		"create allowed, disabled": {
+			operation:      admission.Create,
+			obj:            sliceNode,
+			featureEnabled: false,
+			expectError:    "",
+		},
+		"create disallowed, disabled": {
+			operation:      admission.Create,
+			obj:            sliceOtherNode,
+			featureEnabled: false,
+			expectError:    err,
+		},
+		"update allowed, same node": {
+			operation:      admission.Update,
+			obj:            sliceNode,
+			featureEnabled: true,
+			expectError:    "",
+		},
+		"update allowed, other node": {
+			operation:      admission.Update,
+			obj:            sliceOtherNode,
+			featureEnabled: true,
+			expectError:    "",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			attributes := admission.NewAttributesRecord(
+				test.obj, nil, schema.GroupVersionKind{},
+				"", "foo", apiResource, "", test.operation, &metav1.CreateOptions{}, false, mynode)
+			featuregatetesting.SetFeatureGateDuringTest(t, feature.DefaultFeatureGate, features.DynamicResourceAllocation, test.featureEnabled)
+			a := &admitTestCase{
+				name:       name,
+				attributes: attributes,
+				features:   feature.DefaultFeatureGate,
+				err:        test.expectError,
+			}
+			a.run(t)
+		})
+
+	}
 }

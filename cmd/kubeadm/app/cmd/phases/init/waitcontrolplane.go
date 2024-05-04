@@ -26,10 +26,9 @@ import (
 	"github.com/pkg/errors"
 
 	clientset "k8s.io/client-go/kubernetes"
-	"k8s.io/klog/v2"
 
 	"k8s.io/kubernetes/cmd/kubeadm/app/cmd/phases/workflow"
-	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
+	"k8s.io/kubernetes/cmd/kubeadm/app/features"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/apiclient"
 	dryrunutil "k8s.io/kubernetes/cmd/kubeadm/app/util/dryrun"
 )
@@ -49,26 +48,22 @@ var (
 
 	Additionally, a control plane component may have crashed or exited when started by the container runtime.
 	To troubleshoot, list all containers using your preferred container runtimes CLI.
-{{ if .IsDocker }}
-	Here is one example how you may list all Kubernetes containers running in docker:
-		- 'docker ps -a | grep kube | grep -v pause'
-		Once you have found the failing container, you can inspect its logs with:
-		- 'docker logs CONTAINERID'
-{{ else }}
-	Here is one example how you may list all Kubernetes containers running in cri-o/containerd using crictl:
+	Here is one example how you may list all running Kubernetes containers by using crictl:
 		- 'crictl --runtime-endpoint {{ .Socket }} ps -a | grep kube | grep -v pause'
 		Once you have found the failing container, you can inspect its logs with:
 		- 'crictl --runtime-endpoint {{ .Socket }} logs CONTAINERID'
-{{ end }}
 	`)))
 )
 
 // NewWaitControlPlanePhase is a hidden phase that runs after the control-plane and etcd phases
 func NewWaitControlPlanePhase() workflow.Phase {
 	phase := workflow.Phase{
-		Name:   "wait-control-plane",
-		Run:    runWaitControlPlanePhase,
+		Name:  "wait-control-plane",
+		Short: "Wait for the control plane to start",
+		// TODO: unhide this phase once WaitForAllControlPlaneComponents goes GA:
+		// https://github.com/kubernetes/kubeadm/issues/2907
 		Hidden: true,
+		Run:    runWaitControlPlanePhase,
 	}
 	return phase
 }
@@ -87,35 +82,47 @@ func runWaitControlPlanePhase(c workflow.RunData) error {
 		}
 	}
 
-	// waiter holds the apiclient.Waiter implementation of choice, responsible for querying the API server in various ways and waiting for conditions to be fulfilled
-	klog.V(1).Infoln("[wait-control-plane] Waiting for the API server to be healthy")
-
-	client, err := data.Client()
+	// Both Wait* calls below use a /healthz endpoint, thus a client without permissions works fine
+	client, err := data.ClientWithoutBootstrap()
 	if err != nil {
-		return errors.Wrap(err, "cannot obtain client")
+		return errors.Wrap(err, "cannot obtain client without bootstrap")
 	}
 
-	timeout := data.Cfg().ClusterConfiguration.APIServer.TimeoutForControlPlane.Duration
-	waiter, err := newControlPlaneWaiter(data.DryRun(), timeout, client, data.OutputWriter())
+	waiter, err := newControlPlaneWaiter(data.DryRun(), 0, client, data.OutputWriter())
 	if err != nil {
 		return errors.Wrap(err, "error creating waiter")
 	}
 
-	fmt.Printf("[wait-control-plane] Waiting for the kubelet to boot up the control plane as static Pods from directory %q. This can take up to %v\n", data.ManifestDir(), timeout)
+	fmt.Printf("[wait-control-plane] Waiting for the kubelet to boot up the control plane as static Pods"+
+		" from directory %q\n",
+		data.ManifestDir())
 
-	if err := waiter.WaitForKubeletAndFunc(waiter.WaitForAPI); err != nil {
+	handleError := func(err error) error {
 		context := struct {
-			Error    string
-			Socket   string
-			IsDocker bool
+			Error  string
+			Socket string
 		}{
-			Error:    fmt.Sprintf("%v", err),
-			Socket:   data.Cfg().NodeRegistration.CRISocket,
-			IsDocker: data.Cfg().NodeRegistration.CRISocket == kubeadmconstants.DefaultDockerCRISocket,
+			Error:  fmt.Sprintf("%v", err),
+			Socket: data.Cfg().NodeRegistration.CRISocket,
 		}
 
 		kubeletFailTempl.Execute(data.OutputWriter(), context)
 		return errors.New("couldn't initialize a Kubernetes cluster")
+	}
+
+	waiter.SetTimeout(data.Cfg().Timeouts.KubeletHealthCheck.Duration)
+	if err := waiter.WaitForKubelet(); err != nil {
+		return handleError(err)
+	}
+
+	waiter.SetTimeout(data.Cfg().Timeouts.ControlPlaneComponentHealthCheck.Duration)
+	if features.Enabled(data.Cfg().ClusterConfiguration.FeatureGates, features.WaitForAllControlPlaneComponents) {
+		err = waiter.WaitForControlPlaneComponents(&data.Cfg().ClusterConfiguration)
+	} else {
+		err = waiter.WaitForAPI()
+	}
+	if err != nil {
+		return handleError(err)
 	}
 
 	return nil

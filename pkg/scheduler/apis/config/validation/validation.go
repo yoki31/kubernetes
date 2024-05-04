@@ -18,13 +18,10 @@ package validation
 
 import (
 	"fmt"
-	"net"
 	"reflect"
-	"strconv"
-	"strings"
 
-	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -33,8 +30,6 @@ import (
 	componentbasevalidation "k8s.io/component-base/config/validation"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
-	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta2"
-	"k8s.io/kubernetes/pkg/scheduler/apis/config/v1beta3"
 )
 
 // ValidateKubeSchedulerConfiguration ensures validation of the KubeSchedulerConfiguration struct
@@ -42,6 +37,14 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 	var errs []error
 	errs = append(errs, componentbasevalidation.ValidateClientConnectionConfiguration(&cc.ClientConnection, field.NewPath("clientConnection")).ToAggregate())
 	errs = append(errs, componentbasevalidation.ValidateLeaderElectionConfiguration(&cc.LeaderElection, field.NewPath("leaderElection")).ToAggregate())
+
+	// TODO: This can be removed when ResourceLock is not available
+	// Only ResourceLock values with leases are allowed
+	if cc.LeaderElection.LeaderElect && cc.LeaderElection.ResourceLock != "leases" {
+		leaderElectionPath := field.NewPath("leaderElection")
+		errs = append(errs, field.Invalid(leaderElectionPath.Child("resourceLock"), cc.LeaderElection.ResourceLock, `resourceLock value must be "leases"`))
+	}
+
 	profilesPath := field.NewPath("profiles")
 	if cc.Parallelism <= 0 {
 		errs = append(errs, field.Invalid(field.NewPath("parallelism"), cc.Parallelism, "should be an integer value greater than zero"))
@@ -62,36 +65,9 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 		}
 		errs = append(errs, validateCommonQueueSort(profilesPath, cc.Profiles)...)
 	}
-	if len(cc.HealthzBindAddress) > 0 {
-		host, port, err := splitHostIntPort(cc.HealthzBindAddress)
-		if err != nil {
-			errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, err.Error()))
-		} else {
-			if errMsgs := validation.IsValidIP(host); errMsgs != nil {
-				errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, strings.Join(errMsgs, ",")))
-			}
-			if port != 0 {
-				errs = append(errs, field.Invalid(field.NewPath("healthzBindAddress"), cc.HealthzBindAddress, "must be empty or with an explicit 0 port"))
-			}
-		}
-	}
-	if len(cc.MetricsBindAddress) > 0 {
-		host, port, err := splitHostIntPort(cc.MetricsBindAddress)
-		if err != nil {
-			errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, err.Error()))
-		} else {
-			if errMsgs := validation.IsValidIP(host); errMsgs != nil {
-				errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, strings.Join(errMsgs, ",")))
-			}
-			if port != 0 {
-				errs = append(errs, field.Invalid(field.NewPath("metricsBindAddress"), cc.MetricsBindAddress, "must be empty or with an explicit 0 port"))
-			}
-		}
-	}
-	if cc.PercentageOfNodesToScore < 0 || cc.PercentageOfNodesToScore > 100 {
-		errs = append(errs, field.Invalid(field.NewPath("percentageOfNodesToScore"),
-			cc.PercentageOfNodesToScore, "not in valid range [0-100]"))
-	}
+
+	errs = append(errs, validatePercentageOfNodesToScore(field.NewPath("percentageOfNodesToScore"), cc.PercentageOfNodesToScore))
+
 	if cc.PodInitialBackoffSeconds <= 0 {
 		errs = append(errs, field.Invalid(field.NewPath("podInitialBackoffSeconds"),
 			cc.PodInitialBackoffSeconds, "must be greater than 0"))
@@ -105,41 +81,34 @@ func ValidateKubeSchedulerConfiguration(cc *config.KubeSchedulerConfiguration) u
 	return utilerrors.Flatten(utilerrors.NewAggregate(errs))
 }
 
-func splitHostIntPort(s string) (string, int, error) {
-	host, port, err := net.SplitHostPort(s)
-	if err != nil {
-		return "", 0, err
+func validatePercentageOfNodesToScore(path *field.Path, percentageOfNodesToScore *int32) error {
+	if percentageOfNodesToScore != nil {
+		if *percentageOfNodesToScore < 0 || *percentageOfNodesToScore > 100 {
+			return field.Invalid(path, *percentageOfNodesToScore, "not in valid range [0-100]")
+		}
 	}
-	portInt, err := strconv.Atoi(port)
-	if err != nil {
-		return "", 0, err
-	}
-	return host, portInt, err
+	return nil
 }
 
-type removedPlugins struct {
+type invalidPlugins struct {
 	schemeGroupVersion string
 	plugins            []string
 }
 
-// removedPluginsByVersion maintains a list of removed plugins in each version.
+// invalidPluginsByVersion maintains a list of removed/deprecated plugins in each version.
 // Remember to add an entry to that list when creating a new component config
-// version (even if the list of removed plugins is empty).
-var removedPluginsByVersion = []removedPlugins{
+// version (even if the list of invalid plugins is empty).
+var invalidPluginsByVersion = []invalidPlugins{
 	{
-		schemeGroupVersion: v1beta2.SchemeGroupVersion.String(),
-		plugins:            []string{},
-	},
-	{
-		schemeGroupVersion: v1beta3.SchemeGroupVersion.String(),
+		schemeGroupVersion: v1.SchemeGroupVersion.String(),
 		plugins:            []string{},
 	},
 }
 
-// isPluginRemoved checks if a given plugin was removed in the given component
+// isPluginInvalid checks if a given plugin was removed/deprecated in the given component
 // config version or earlier.
-func isPluginRemoved(apiVersion string, name string) (bool, string) {
-	for _, dp := range removedPluginsByVersion {
+func isPluginInvalid(apiVersion string, name string) (bool, string) {
+	for _, dp := range invalidPluginsByVersion {
 		for _, plugin := range dp.plugins {
 			if name == plugin {
 				return true, dp.schemeGroupVersion
@@ -152,11 +121,11 @@ func isPluginRemoved(apiVersion string, name string) (bool, string) {
 	return false, ""
 }
 
-func validatePluginSetForRemovedPlugins(path *field.Path, apiVersion string, ps config.PluginSet) []error {
+func validatePluginSetForInvalidPlugins(path *field.Path, apiVersion string, ps config.PluginSet) []error {
 	var errs []error
 	for i, plugin := range ps.Enabled {
-		if removed, removedVersion := isPluginRemoved(apiVersion, plugin.Name); removed {
-			errs = append(errs, field.Invalid(path.Child("enabled").Index(i), plugin.Name, fmt.Sprintf("was removed in version %q (KubeSchedulerConfiguration is version %q)", removedVersion, apiVersion)))
+		if invalid, invalidVersion := isPluginInvalid(apiVersion, plugin.Name); invalid {
+			errs = append(errs, field.Invalid(path.Child("enabled").Index(i), plugin.Name, fmt.Sprintf("was invalid in version %q (KubeSchedulerConfiguration is version %q)", invalidVersion, apiVersion)))
 		}
 	}
 	return errs
@@ -167,6 +136,7 @@ func validateKubeSchedulerProfile(path *field.Path, apiVersion string, profile *
 	if len(profile.SchedulerName) == 0 {
 		errs = append(errs, field.Required(path.Child("schedulerName"), ""))
 	}
+	errs = append(errs, validatePercentageOfNodesToScore(path.Child("percentageOfNodesToScore"), profile.PercentageOfNodesToScore))
 	errs = append(errs, validatePluginConfig(path, apiVersion, profile)...)
 	return errs
 }
@@ -185,6 +155,7 @@ func validatePluginConfig(path *field.Path, apiVersion string, profile *config.K
 
 	if profile.Plugins != nil {
 		stagesToPluginSet := map[string]config.PluginSet{
+			"preEnqueue": profile.Plugins.PreEnqueue,
 			"queueSort":  profile.Plugins.QueueSort,
 			"preFilter":  profile.Plugins.PreFilter,
 			"filter":     profile.Plugins.Filter,
@@ -200,12 +171,12 @@ func validatePluginConfig(path *field.Path, apiVersion string, profile *config.K
 
 		pluginsPath := path.Child("plugins")
 		for s, p := range stagesToPluginSet {
-			errs = append(errs, validatePluginSetForRemovedPlugins(
+			errs = append(errs, validatePluginSetForInvalidPlugins(
 				pluginsPath.Child(s), apiVersion, p)...)
 		}
 	}
 
-	seenPluginConfig := make(sets.String)
+	seenPluginConfig := sets.New[string]()
 
 	for i := range profile.PluginConfig {
 		pluginConfigPath := path.Child("pluginConfig").Index(i)
@@ -216,8 +187,8 @@ func validatePluginConfig(path *field.Path, apiVersion string, profile *config.K
 		} else {
 			seenPluginConfig.Insert(name)
 		}
-		if removed, removedVersion := isPluginRemoved(apiVersion, name); removed {
-			errs = append(errs, field.Invalid(pluginConfigPath, name, fmt.Sprintf("was removed in version %q (KubeSchedulerConfiguration is version %q)", removedVersion, apiVersion)))
+		if invalid, invalidVersion := isPluginInvalid(apiVersion, name); invalid {
+			errs = append(errs, field.Invalid(pluginConfigPath, name, fmt.Sprintf("was invalid in version %q (KubeSchedulerConfiguration is version %q)", invalidVersion, apiVersion)))
 		} else if validateFunc, ok := m[name]; ok {
 			// type mismatch, no need to validate the `args`.
 			if reflect.TypeOf(args) != reflect.ValueOf(validateFunc).Type().In(1) {
@@ -260,12 +231,12 @@ func validateCommonQueueSort(path *field.Path, profiles []config.KubeSchedulerPr
 		if profiles[i].Plugins != nil {
 			curr = profiles[i].Plugins.QueueSort
 		}
-		if !cmp.Equal(canon, curr) {
-			errs = append(errs, field.Invalid(path.Index(i).Child("plugins", "queueSort"), curr, "has to match for all profiles"))
+		if !apiequality.Semantic.DeepEqual(canon, curr) {
+			errs = append(errs, field.Invalid(path.Index(i).Child("plugins", "queueSort"), curr, "queueSort must be the same for all profiles"))
 		}
 		for _, cfg := range profiles[i].PluginConfig {
-			if cfg.Name == queueSortName && !cmp.Equal(queueSortArgs, cfg.Args) {
-				errs = append(errs, field.Invalid(path.Index(i).Child("pluginConfig", "args"), cfg.Args, "has to match for all profiles"))
+			if cfg.Name == queueSortName && !apiequality.Semantic.DeepEqual(queueSortArgs, cfg.Args) {
+				errs = append(errs, field.Invalid(path.Index(i).Child("pluginConfig", "args"), cfg.Args, "queueSort must be the same for all profiles"))
 			}
 		}
 	}
@@ -276,7 +247,7 @@ func validateCommonQueueSort(path *field.Path, profiles []config.KubeSchedulerPr
 func validateExtenders(fldPath *field.Path, extenders []config.Extender) []error {
 	var errs []error
 	binders := 0
-	extenderManagedResources := sets.NewString()
+	extenderManagedResources := sets.New[string]()
 	for i, extender := range extenders {
 		path := fldPath.Index(i)
 		if len(extender.PrioritizeVerb) > 0 && extender.Weight <= 0 {

@@ -20,13 +20,14 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	rbac "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/diff"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/rest/fake"
 	cmdtesting "k8s.io/kubectl/pkg/cmd/testing"
 	"k8s.io/kubectl/pkg/scheme"
@@ -133,7 +134,7 @@ func TestCreateRole(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			ioStreams, _, buf, _ := genericclioptions.NewTestIOStreams()
+			ioStreams, _, buf, _ := genericiooptions.NewTestIOStreams()
 			cmd := NewCmdCreateRole(tf, ioStreams)
 			cmd.Flags().Set("dry-run", "client")
 			cmd.Flags().Set("output", "yaml")
@@ -149,7 +150,7 @@ func TestCreateRole(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !equality.Semantic.DeepEqual(test.expectedRole, actual) {
-				t.Errorf("%s", diff.ObjectReflectDiff(test.expectedRole, actual))
+				t.Errorf("%s", cmp.Diff(test.expectedRole, actual))
 			}
 		})
 	}
@@ -341,7 +342,7 @@ func TestValidate(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		test.roleOptions.IOStreams = genericclioptions.NewTestIOStreamsDiscard()
+		test.roleOptions.IOStreams = genericiooptions.NewTestIOStreamsDiscard()
 
 		var err error
 		test.roleOptions.Mapper, err = tf.ToRESTMapper()
@@ -645,7 +646,7 @@ func TestComplete(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		cmd := NewCmdCreateRole(tf, genericclioptions.NewTestIOStreamsDiscard())
+		cmd := NewCmdCreateRole(tf, genericiooptions.NewTestIOStreamsDiscard())
 		cmd.Flags().Set("resource", test.resources)
 
 		err := test.roleOptions.Complete(tf, cmd, test.params)
@@ -680,27 +681,34 @@ func TestComplete(t *testing.T) {
 }
 
 func TestAddSpecialVerb(t *testing.T) {
-	resource := schema.GroupResource{
-		Group:    "my.custom.io",
-		Resource: "things",
+	testCases := map[string]struct {
+		verb     string
+		resource schema.GroupResource
+	}{
+		"existing verb": {
+			verb:     "use",
+			resource: schema.GroupResource{Group: "my.custom.io", Resource: "one"},
+		},
+		"new verb": {
+			verb:     "new",
+			resource: schema.GroupResource{Group: "my.custom.io", Resource: "two"},
+		},
 	}
 
-	AddSpecialVerb("use", resource)
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			AddSpecialVerb(tc.verb, tc.resource)
+			resources, ok := specialVerbs[tc.verb]
+			if !ok {
+				t.Errorf("missing expected verb: %s", tc.verb)
+			}
 
-	found := false
-	resources, ok := specialVerbs["use"]
-	if !ok {
-		t.Errorf("expected resources for verb: use, found none\n")
-	}
-
-	for _, res := range resources {
-		if reflect.DeepEqual(resource, res) {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		t.Errorf("expected resource:\n%v\nnot found", resource)
+			for _, res := range resources {
+				if reflect.DeepEqual(tc.resource, res) {
+					return
+				}
+			}
+			t.Errorf("missing expected resource:%#v", tc.resource)
+		})
 	}
 }

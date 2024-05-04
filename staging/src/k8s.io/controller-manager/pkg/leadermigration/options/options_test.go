@@ -17,55 +17,38 @@ limitations under the License.
 package options
 
 import (
-	"io/ioutil"
 	"os"
 	"reflect"
 	"testing"
 
+	utiltesting "k8s.io/client-go/util/testing"
+
 	"github.com/spf13/pflag"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-	featuregatetesting "k8s.io/component-base/featuregate/testing"
+
 	"k8s.io/controller-manager/config"
-	"k8s.io/controller-manager/pkg/features"
 	migrationconfig "k8s.io/controller-manager/pkg/leadermigration/config"
 )
 
 func TestLeaderMigrationOptions(t *testing.T) {
 	testCases := []struct {
-		name              string
-		flags             []string
-		configContent     string
-		expectEnabled     bool
-		expectErr         bool
-		enableFeatureGate bool
-		expectConfig      *config.LeaderMigrationConfiguration
+		name          string
+		flags         []string
+		configContent string
+		expectEnabled bool
+		expectErr     bool
+		expectConfig  *config.LeaderMigrationConfiguration
 	}{
 		{
-			name:              "default (disabled), with feature gate disabled",
-			flags:             []string{},
-			enableFeatureGate: false,
-			expectEnabled:     false,
-			expectErr:         false,
+			name:          "enabled, with default configuration",
+			flags:         []string{"--enable-leader-migration"},
+			expectEnabled: true,
+			expectErr:     false,
+			expectConfig:  migrationconfig.DefaultLeaderMigrationConfiguration(),
 		},
 		{
-			name:              "enabled, with feature gate disabled",
-			flags:             []string{"--enable-leader-migration"},
-			enableFeatureGate: false,
-			expectErr:         true,
-		},
-		{
-			name:              "enabled, with default configuration",
-			flags:             []string{"--enable-leader-migration"},
-			enableFeatureGate: true,
-			expectEnabled:     true,
-			expectErr:         false,
-			expectConfig:      migrationconfig.DefaultLeaderMigrationConfiguration(),
-		},
-		{
-			name:              "enabled, with custom configuration file",
-			flags:             []string{"--enable-leader-migration"},
-			enableFeatureGate: true,
-			expectEnabled:     true,
+			name:          "enabled, with custom configuration file",
+			flags:         []string{"--enable-leader-migration"},
+			expectEnabled: true,
 			configContent: `
 apiVersion: controllermanager.config.k8s.io/v1alpha1
 kind: LeaderMigrationConfiguration
@@ -81,10 +64,9 @@ controllerLeaders: []
 			},
 		},
 		{
-			name:              "enabled, with custom configuration file (version v1beta1)",
-			flags:             []string{"--enable-leader-migration"},
-			enableFeatureGate: true,
-			expectEnabled:     true,
+			name:          "enabled, with custom configuration file (version v1beta1)",
+			flags:         []string{"--enable-leader-migration"},
+			expectEnabled: true,
 			configContent: `
 apiVersion: controllermanager.config.k8s.io/v1beta1
 kind: LeaderMigrationConfiguration
@@ -99,18 +81,117 @@ controllerLeaders: []
 				ControllerLeaders: []config.ControllerLeaderConfiguration{},
 			},
 		},
+		{
+			name:          "enabled, with custom configuration file (version v1)",
+			flags:         []string{"--enable-leader-migration"},
+			expectEnabled: true,
+			configContent: `
+apiVersion: controllermanager.config.k8s.io/v1
+kind: LeaderMigrationConfiguration
+leaderName: test-leader-migration
+controllerLeaders: []
+`,
+			expectErr: false,
+			expectConfig: &config.LeaderMigrationConfiguration{
+				LeaderName:        "test-leader-migration",
+				ResourceLock:      "leases",
+				ControllerLeaders: []config.ControllerLeaderConfiguration{},
+			},
+		},
+		{
+			name:          "enabled, with populated controllerLeaders (version v1)",
+			flags:         []string{"--enable-leader-migration"},
+			expectEnabled: true,
+			configContent: `
+apiVersion: controllermanager.config.k8s.io/v1
+kind: LeaderMigrationConfiguration
+leaderName: test-leader-migration
+controllerLeaders:
+  - name: route-controller
+    component: "*"
+  - name: service-controller
+    component: "*"
+  - name: cloud-node-lifecycle-controller
+    component: "*"
+  - name: node-ipam-controller
+    component: "*"
+`,
+			expectErr: false,
+			expectConfig: &config.LeaderMigrationConfiguration{
+				LeaderName:   "test-leader-migration",
+				ResourceLock: "leases",
+				ControllerLeaders: []config.ControllerLeaderConfiguration{
+					{
+						Name:      "route-controller",
+						Component: "*",
+					},
+					{
+						Name:      "service-controller",
+						Component: "*",
+					},
+					{
+						Name:      "cloud-node-lifecycle-controller",
+						Component: "*",
+					},
+					{
+						Name:      "node-ipam-controller",
+						Component: "*",
+					},
+				},
+			},
+		}, {
+			name:          "enabled, with non-wildcard controllerLeaders (version v1)",
+			flags:         []string{"--enable-leader-migration"},
+			expectEnabled: true,
+			configContent: `
+apiVersion: controllermanager.config.k8s.io/v1
+kind: LeaderMigrationConfiguration
+leaderName: test-leader-migration
+controllerLeaders:
+  - name: route-controller
+    component: "cloud-controller-manager"
+  - name: service-controller
+    component: "cloud-controller-manager"
+  - name: cloud-node-lifecycle-controller
+    component: "cloud-controller-manager"
+  - name: node-ipam-controller
+    component: "kube-controller-manager"
+`,
+			expectErr: false,
+			expectConfig: &config.LeaderMigrationConfiguration{
+				LeaderName:   "test-leader-migration",
+				ResourceLock: "leases",
+				ControllerLeaders: []config.ControllerLeaderConfiguration{
+					{
+						Name:      "route-controller",
+						Component: "cloud-controller-manager",
+					},
+					{
+						Name:      "service-controller",
+						Component: "cloud-controller-manager",
+					},
+					{
+						Name:      "cloud-node-lifecycle-controller",
+						Component: "cloud-controller-manager",
+					},
+					{
+						Name:      "node-ipam-controller",
+						Component: "kube-controller-manager",
+					},
+				},
+			},
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.ControllerManagerLeaderMigration, tc.enableFeatureGate)()
 			flags := tc.flags
 			if tc.configContent != "" {
-				configFile, err := ioutil.TempFile("", tc.name)
+				configFile, err := os.CreateTemp("", tc.name)
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer os.Remove(configFile.Name())
-				err = ioutil.WriteFile(configFile.Name(), []byte(tc.configContent), os.FileMode(0755))
+				defer utiltesting.CloseAndRemove(t, configFile)
+				err = os.WriteFile(configFile.Name(), []byte(tc.configContent), os.FileMode(0755))
 				if err != nil {
 					t.Fatal(err)
 				}

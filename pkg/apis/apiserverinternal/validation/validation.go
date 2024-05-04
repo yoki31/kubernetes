@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
+	"k8s.io/apimachinery/pkg/util/sets"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/apis/apiserverinternal"
@@ -67,7 +68,13 @@ func ValidateStorageVersionStatusUpdate(sv, oldSV *apiserverinternal.StorageVers
 
 func validateStorageVersionStatus(ss apiserverinternal.StorageVersionStatus, fldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
+	allAPIServerIDs := sets.New[string]()
 	for i, ssv := range ss.StorageVersions {
+		if allAPIServerIDs.Has(ssv.APIServerID) {
+			allErrs = append(allErrs, field.Duplicate(fldPath.Child("storageVersions").Index(i).Child("apiServerID"), ssv.APIServerID))
+		} else {
+			allAPIServerIDs.Insert(ssv.APIServerID)
+		}
 		allErrs = append(allErrs, validateServerStorageVersion(ssv, fldPath.Child("storageVersions").Index(i))...)
 	}
 	if err := validateCommonVersion(ss, fldPath); err != nil {
@@ -97,6 +104,22 @@ func validateServerStorageVersion(ssv apiserverinternal.ServerStorageVersion, fl
 	}
 	if !found {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("decodableVersions"), ssv.DecodableVersions, fmt.Sprintf("decodableVersions must include encodingVersion %s", ssv.EncodingVersion)))
+	}
+
+	for i, sv := range ssv.ServedVersions {
+		if errs := isValidAPIVersion(sv); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("servedVersions").Index(i), sv, strings.Join(errs, ",")))
+		}
+		foundDecodableVersion := false
+		for _, dv := range ssv.DecodableVersions {
+			if sv == dv {
+				foundDecodableVersion = true
+				break
+			}
+		}
+		if !foundDecodableVersion {
+			allErrs = append(allErrs, field.Invalid(fldPath.Child("servedVersions").Index(i), sv, fmt.Sprintf("individual served version : %s must be included in decodableVersions : %s", sv, ssv.DecodableVersions)))
+		}
 	}
 	return allErrs
 }
@@ -142,12 +165,8 @@ func validateStorageVersionCondition(conditions []apiserverinternal.StorageVersi
 				fmt.Sprintf("the type of the condition is not unique, it also appears in conditions[%d]", ii)))
 		}
 		seenType[condition.Type] = i
-		for _, msg := range utilvalidation.IsQualifiedName(string(condition.Type)) {
-			allErrs = append(allErrs, field.Invalid(fldPath.Index(i).Child("type"), string(condition.Type), msg))
-		}
-		for _, msg := range utilvalidation.IsQualifiedName(string(condition.Status)) {
-			allErrs = append(allErrs, field.Invalid(fldPath.Index(i).Child("status"), string(condition.Type), msg))
-		}
+		allErrs = append(allErrs, apivalidation.ValidateQualifiedName(string(condition.Type), fldPath.Index(i).Child("type"))...)
+		allErrs = append(allErrs, apivalidation.ValidateQualifiedName(string(condition.Status), fldPath.Index(i).Child("status"))...)
 		if condition.Reason == "" {
 			allErrs = append(allErrs, field.Required(fldPath.Index(i).Child("reason"), "reason cannot be empty"))
 		}

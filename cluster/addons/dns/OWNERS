@@ -3,8 +3,10 @@
 approvers:
   - bowei
   - mrhohn
-  - prameshj
+  - kl52752
 reviewers:
   - bowei
   - mrhohn
-  - prameshj
+  - kl52752
+emeritus_approvers:
+  - dpasiukevich

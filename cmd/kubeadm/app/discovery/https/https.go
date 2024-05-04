@@ -17,7 +17,7 @@ limitations under the License.
 package https
 
 import (
-	"io/ioutil"
+	"io"
 	"net/http"
 	"time"
 
@@ -31,7 +31,7 @@ import (
 // RetrieveValidatedConfigInfo connects to the API Server and makes sure it can talk
 // securely to the API Server using the provided CA cert and
 // optionally refreshes the cluster-info information from the cluster-info ConfigMap
-func RetrieveValidatedConfigInfo(httpsURL, clustername string, discoveryTimeout time.Duration) (*clientcmdapi.Config, error) {
+func RetrieveValidatedConfigInfo(httpsURL string, discoveryTimeout time.Duration) (*clientcmdapi.Config, error) {
 	client := &http.Client{Transport: netutil.SetOldTransportDefaults(&http.Transport{})}
 	response, err := client.Get(httpsURL)
 	if err != nil {
@@ -39,7 +39,7 @@ func RetrieveValidatedConfigInfo(httpsURL, clustername string, discoveryTimeout 
 	}
 	defer response.Body.Close()
 
-	kubeconfig, err := ioutil.ReadAll(response.Body)
+	kubeconfig, err := io.ReadAll(response.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -48,5 +48,5 @@ func RetrieveValidatedConfigInfo(httpsURL, clustername string, discoveryTimeout 
 	if err != nil {
 		return nil, err
 	}
-	return file.ValidateConfigInfo(config, clustername, discoveryTimeout)
+	return file.ValidateConfigInfo(config, discoveryTimeout)
 }

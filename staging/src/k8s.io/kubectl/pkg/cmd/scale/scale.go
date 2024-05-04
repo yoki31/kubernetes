@@ -26,12 +26,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/cli-runtime/pkg/printers"
 	"k8s.io/cli-runtime/pkg/resource"
 	"k8s.io/client-go/kubernetes"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/scale"
-	"k8s.io/kubectl/pkg/util"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -57,7 +58,7 @@ var (
 		kubectl scale --current-replicas=2 --replicas=3 deployment/mysql
 
 		# Scale multiple replication controllers
-		kubectl scale --replicas=5 rc/foo rc/bar rc/baz
+		kubectl scale --replicas=5 rc/example1 rc/example2 rc/example3
 
 		# Scale stateful set named 'web' to 3
 		kubectl scale --replicas=3 statefulset/web`))
@@ -87,12 +88,11 @@ type ScaleOptions struct {
 	unstructuredClientForMapping func(mapping *meta.RESTMapping) (resource.RESTClient, error)
 	parent                       string
 	dryRunStrategy               cmdutil.DryRunStrategy
-	dryRunVerifier               *resource.DryRunVerifier
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 }
 
-func NewScaleOptions(ioStreams genericclioptions.IOStreams) *ScaleOptions {
+func NewScaleOptions(ioStreams genericiooptions.IOStreams) *ScaleOptions {
 	return &ScaleOptions{
 		PrintFlags:      genericclioptions.NewPrintFlags("scaled"),
 		RecordFlags:     genericclioptions.NewRecordFlags(),
@@ -103,7 +103,7 @@ func NewScaleOptions(ioStreams genericclioptions.IOStreams) *ScaleOptions {
 }
 
 // NewCmdScale returns a cobra command with the appropriate configuration and flags to run scale
-func NewCmdScale(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdScale(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cobra.Command {
 	o := NewScaleOptions(ioStreams)
 
 	validArgs := []string{"deployment", "replicaset", "replicationcontroller", "statefulset"}
@@ -114,10 +114,10 @@ func NewCmdScale(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 		Short:                 i18n.T("Set a new size for a deployment, replica set, or replication controller"),
 		Long:                  scaleLong,
 		Example:               scaleExample,
-		ValidArgsFunction:     util.SpecifiedResourceTypeAndNameCompletionFunc(f, validArgs),
+		ValidArgsFunction:     completion.SpecifiedResourceTypeAndNameCompletionFunc(f, validArgs),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
-			cmdutil.CheckErr(o.Validate(cmd))
+			cmdutil.CheckErr(o.Validate())
 			cmdutil.CheckErr(o.RunScale())
 		},
 	}
@@ -125,7 +125,6 @@ func NewCmdScale(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 	o.RecordFlags.AddFlags(cmd)
 	o.PrintFlags.AddFlags(cmd)
 
-	cmd.Flags().StringVarP(&o.Selector, "selector", "l", o.Selector, "Selector (label query) to filter on, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2)")
 	cmd.Flags().BoolVar(&o.All, "all", o.All, "Select all resources in the namespace of the specified resource types")
 	cmd.Flags().StringVar(&o.ResourceVersion, "resource-version", o.ResourceVersion, i18n.T("Precondition for resource version. Requires that the current resource version match this value in order to scale."))
 	cmd.Flags().IntVar(&o.CurrentReplicas, "current-replicas", o.CurrentReplicas, "Precondition for current size. Requires that the current size of the resource match this value in order to scale. -1 (default) for no condition.")
@@ -134,6 +133,7 @@ func NewCmdScale(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 	cmd.Flags().DurationVar(&o.Timeout, "timeout", 0, "The length of time to wait before giving up on a scale operation, zero means don't wait. Any other values should contain a corresponding time unit (e.g. 1s, 2m, 3h).")
 	cmdutil.AddFilenameOptionFlags(cmd, &o.FilenameOptions, "identifying the resource to set a new size")
 	cmdutil.AddDryRunFlag(cmd)
+	cmdutil.AddLabelSelectorFlagVar(cmd, &o.Selector)
 	return cmd
 }
 
@@ -144,21 +144,17 @@ func (o *ScaleOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	if err != nil {
 		return err
 	}
-	printer, err := o.PrintFlags.ToPrinter()
-	if err != nil {
-		return err
-	}
-	o.PrintObj = printer.PrintObj
 
 	o.dryRunStrategy, err = cmdutil.GetDryRunStrategy(cmd)
 	if err != nil {
 		return err
 	}
-	dynamicClient, err := f.DynamicClient()
+	cmdutil.PrintFlagsWithDryRunStrategy(o.PrintFlags, o.dryRunStrategy)
+	printer, err := o.PrintFlags.ToPrinter()
 	if err != nil {
 		return err
 	}
-	o.dryRunVerifier = resource.NewDryRunVerifier(dynamicClient, f.OpenAPIGetter())
+	o.PrintObj = printer.PrintObj
 
 	o.namespace, o.enforceNamespace, err = f.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
@@ -181,7 +177,7 @@ func (o *ScaleOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 	return nil
 }
 
-func (o *ScaleOptions) Validate(cmd *cobra.Command) error {
+func (o *ScaleOptions) Validate() error {
 	if o.Replicas < 0 {
 		return fmt.Errorf("The --replicas=COUNT flag is required, and COUNT must be greater than or equal to 0")
 	}
@@ -209,13 +205,11 @@ func (o *ScaleOptions) RunScale() error {
 		return err
 	}
 
-	infos := []*resource.Info{}
-	r.Visit(func(info *resource.Info, err error) error {
-		if err == nil {
-			infos = append(infos, info)
-		}
-		return nil
-	})
+	// We don't immediately return infoErr if it is not nil.
+	// Because we want to proceed for other valid resources and
+	// at the end of the function, we'll return this
+	// to show invalid resources to the user.
+	infos, infoErr := r.Infos()
 
 	if len(o.ResourceVersion) != 0 && len(infos) > 1 {
 		return fmt.Errorf("cannot use --resource-version with multiple resources")
@@ -234,17 +228,19 @@ func (o *ScaleOptions) RunScale() error {
 		waitForReplicas = scale.NewRetryParams(1*time.Second, o.Timeout)
 	}
 
-	counter := 0
-	err = r.Visit(func(info *resource.Info, err error) error {
-		if err != nil {
-			return err
-		}
-		counter++
+	if len(infos) == 0 {
+		return fmt.Errorf("no objects passed to scale")
+	}
 
+	for _, info := range infos {
 		mapping := info.ResourceMapping()
 		if o.dryRunStrategy == cmdutil.DryRunClient {
-			return o.PrintObj(info.Object, o.Out)
+			if err := o.PrintObj(info.Object, o.Out); err != nil {
+				return err
+			}
+			continue
 		}
+
 		if err := o.scaler.Scale(info.Namespace, info.Name, uint(o.Replicas), precondition, retry, waitForReplicas, mapping.Resource, o.dryRunStrategy == cmdutil.DryRunServer); err != nil {
 			return err
 		}
@@ -263,15 +259,13 @@ func (o *ScaleOptions) RunScale() error {
 			}
 		}
 
-		return o.PrintObj(info.Object, o.Out)
-	})
-	if err != nil {
-		return err
+		err := o.PrintObj(info.Object, o.Out)
+		if err != nil {
+			return err
+		}
 	}
-	if counter == 0 {
-		return fmt.Errorf("no objects passed to scale")
-	}
-	return nil
+
+	return infoErr
 }
 
 func scaler(f cmdutil.Factory) (scale.Scaler, error) {

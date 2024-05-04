@@ -18,6 +18,7 @@ package kubeconfig
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/x509"
 	"fmt"
@@ -28,6 +29,11 @@ import (
 
 	"github.com/pkg/errors"
 
+	rbac "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	certutil "k8s.io/client-go/util/cert"
@@ -39,7 +45,7 @@ import (
 	certsphase "k8s.io/kubernetes/cmd/kubeadm/app/phases/certs"
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
 	kubeconfigutil "k8s.io/kubernetes/cmd/kubeadm/app/util/kubeconfig"
-	pkiutil "k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
+	"k8s.io/kubernetes/cmd/kubeadm/app/util/pkiutil"
 )
 
 const (
@@ -73,10 +79,10 @@ type kubeConfigSpec struct {
 // When not using external CA mode, if a kubeconfig file already exists it is used only if evaluated equal,
 // otherwise an error is returned. For external CA mode, the creation of kubeconfig files is skipped.
 func CreateJoinControlPlaneKubeConfigFiles(outDir string, cfg *kubeadmapi.InitConfiguration) error {
-	var externaCA bool
+	var externalCA bool
 	caKeyPath := filepath.Join(cfg.CertificatesDir, kubeadmconstants.CAKeyName)
 	if _, err := os.Stat(caKeyPath); os.IsNotExist(err) {
-		externaCA = true
+		externalCA = true
 	}
 
 	files := []string{
@@ -86,7 +92,7 @@ func CreateJoinControlPlaneKubeConfigFiles(outDir string, cfg *kubeadmapi.InitCo
 	}
 
 	for _, file := range files {
-		if externaCA {
+		if externalCA {
 			fmt.Printf("[kubeconfig] External CA mode: Using user provided %s\n", file)
 			continue
 		}
@@ -140,6 +146,9 @@ func createKubeConfigFiles(outDir string, cfg *kubeadmapi.InitConfiguration, kub
 // NB. this method holds the information about how kubeadm creates kubeconfig files.
 func getKubeConfigSpecs(cfg *kubeadmapi.InitConfiguration) (map[string]*kubeConfigSpec, error) {
 	caCert, caKey, err := pkiutil.TryLoadCertAndKeyFromDisk(cfg.CertificatesDir, kubeadmconstants.CACertAndKeyBaseName)
+	if os.IsNotExist(errors.Cause(err)) {
+		return nil, errors.Wrap(err, "the CA files do not exist, please run `kubeadm init phase certs ca` to generate it")
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "couldn't create a kubeconfig; the CA files couldn't be loaded")
 	}
@@ -238,6 +247,18 @@ func validateKubeConfig(outDir, filename string, config *clientcmdapi.Config) er
 	// the base64 CA and places it raw in the v1.Config object. In case the user has extra whitespace
 	// in the CA they used to create a kubeconfig this comparison to a generated v1.Config will otherwise fail.
 	caCurrent := bytes.TrimSpace(currentConfig.Clusters[currentCluster].CertificateAuthorityData)
+	if len(caCurrent) == 0 {
+		// fallback to load CA cert data from external CA file
+		clusterCAFilePath := currentConfig.Clusters[currentCluster].CertificateAuthority
+		if len(clusterCAFilePath) > 0 {
+			clusterCABytes, err := os.ReadFile(clusterCAFilePath)
+			if err != nil {
+				klog.Warningf("failed to load CA cert from %q for kubeconfig %q, %v", clusterCAFilePath, kubeConfigFilePath, err)
+			} else {
+				caCurrent = bytes.TrimSpace(clusterCABytes)
+			}
+		}
+	}
 	caExpected := bytes.TrimSpace(config.Clusters[expectedCluster].CertificateAuthorityData)
 
 	// If the current CA cert on disk doesn't match the expected CA cert, error out because we have a file, but it's stale
@@ -268,10 +289,7 @@ func createKubeConfigFileIfNotExists(outDir, filename string, config *clientcmda
 		}
 		fmt.Printf("[kubeconfig] Writing %q kubeconfig file\n", filename)
 		err = kubeconfigutil.WriteToDisk(kubeConfigFilePath, config)
-		if err != nil {
-			return errors.Wrapf(err, "failed to save kubeconfig file %q on disk", kubeConfigFilePath)
-		}
-		return nil
+		return errors.Wrapf(err, "failed to save kubeconfig file %q on disk", kubeConfigFilePath)
 	}
 	// kubeadm doesn't validate the existing kubeconfig file more than this (kubeadm trusts the client certs to be valid)
 	// Basically, if we find a kubeconfig file with the same path; the same CA cert and the same server URL;
@@ -395,6 +413,7 @@ func ValidateKubeconfigsForExternalCA(outDir string, cfg *kubeadmapi.InitConfigu
 	validationConfigCPE := kubeconfigutil.CreateBasic(controlPlaneEndpoint, "dummy", "dummy", pkiutil.EncodeCertPEM(caCert))
 	kubeConfigFileNamesCPE := []string{
 		kubeadmconstants.AdminKubeConfigFileName,
+		kubeadmconstants.SuperAdminKubeConfigFileName,
 		kubeadmconstants.KubeletKubeConfigFileName,
 	}
 
@@ -421,6 +440,13 @@ func getKubeConfigSpecsBase(cfg *kubeadmapi.InitConfiguration) (map[string]*kube
 		kubeadmconstants.AdminKubeConfigFileName: {
 			APIServer:  controlPlaneEndpoint,
 			ClientName: "kubernetes-admin",
+			ClientCertAuth: &clientCertAuth{
+				Organizations: []string{kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding},
+			},
+		},
+		kubeadmconstants.SuperAdminKubeConfigFileName: {
+			APIServer:  controlPlaneEndpoint,
+			ClientName: "kubernetes-super-admin",
 			ClientCertAuth: &clientCertAuth{
 				Organizations: []string{kubeadmconstants.SystemPrivilegedGroup},
 			},
@@ -470,7 +496,7 @@ func createKubeConfigAndCSR(kubeConfigDir string, kubeadmConfig *kubeadmapi.Init
 
 	clientCertConfig := newClientCertConfigFromKubeConfigSpec(spec, nil)
 
-	clientKey, err := pkiutil.NewPrivateKey(clientCertConfig.PublicKeyAlgorithm)
+	clientKey, err := pkiutil.NewPrivateKey(clientCertConfig.EncryptionAlgorithm)
 	if err != nil {
 		return err
 	}
@@ -528,4 +554,157 @@ func CreateDefaultKubeConfigsAndCSRFiles(out io.Writer, kubeConfigDir string, ku
 		}
 	}
 	return nil
+}
+
+// EnsureRBACFunc defines a function type that can be passed to EnsureAdminClusterRoleBinding().
+type EnsureRBACFunc func(context.Context, clientset.Interface, clientset.Interface, time.Duration, time.Duration) (clientset.Interface, error)
+
+// EnsureAdminClusterRoleBinding constructs a client from admin.conf and optionally
+// constructs a client from super-admin.conf if the file exists. It then proceeds
+// to pass the clients to EnsureAdminClusterRoleBindingImpl. The function returns a
+// usable client from admin.conf with RBAC properly constructed or an error.
+func EnsureAdminClusterRoleBinding(outDir string, ensureRBACFunc EnsureRBACFunc) (clientset.Interface, error) {
+	var (
+		err                           error
+		adminClient, superAdminClient clientset.Interface
+	)
+
+	// Create a client from admin.conf.
+	adminClient, err = kubeconfigutil.ClientSetFromFile(filepath.Join(outDir, kubeadmconstants.AdminKubeConfigFileName))
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a client from super-admin.conf.
+	superAdminPath := filepath.Join(outDir, kubeadmconstants.SuperAdminKubeConfigFileName)
+	if _, err := os.Stat(superAdminPath); err == nil {
+		superAdminClient, err = kubeconfigutil.ClientSetFromFile(superAdminPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if ensureRBACFunc == nil {
+		ensureRBACFunc = EnsureAdminClusterRoleBindingImpl
+	}
+
+	ctx := context.Background()
+	return ensureRBACFunc(
+		ctx, adminClient, superAdminClient,
+		kubeadmconstants.KubernetesAPICallRetryInterval, kubeadmapi.GetActiveTimeouts().KubernetesAPICall.Duration,
+	)
+}
+
+// EnsureAdminClusterRoleBindingImpl first attempts to see if the ClusterRoleBinding
+// kubeadm:cluster-admins exists by using adminClient. If it already exists,
+// it would mean the adminClient is usable. If it does not, attempt to create
+// the ClusterRoleBinding by using superAdminClient.
+func EnsureAdminClusterRoleBindingImpl(ctx context.Context, adminClient, superAdminClient clientset.Interface,
+	retryInterval, retryTimeout time.Duration) (clientset.Interface, error) {
+
+	klog.V(1).Infof("ensuring that the ClusterRoleBinding for the %s Group exists",
+		kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding)
+
+	var (
+		err, lastError     error
+		crbExists          bool
+		clusterRoleBinding = &rbac.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding,
+			},
+			RoleRef: rbac.RoleRef{
+				APIGroup: rbac.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "cluster-admin",
+			},
+			Subjects: []rbac.Subject{
+				{
+					Kind: rbac.GroupKind,
+					Name: kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding,
+				},
+			},
+		}
+	)
+
+	// First try to create the CRB with the admin.conf client. If the admin.conf contains a User bound
+	// to the built-in super-user group, this will pass. In all other cases an error will be returned.
+	// The poll here is required to ensure the API server is reachable during "kubeadm init" workflows.
+	err = wait.PollUntilContextTimeout(
+		ctx,
+		retryInterval,
+		retryTimeout,
+		true, func(ctx context.Context) (bool, error) {
+			if _, err := adminClient.RbacV1().ClusterRoleBindings().Create(
+				ctx,
+				clusterRoleBinding,
+				metav1.CreateOptions{},
+			); err != nil {
+				if apierrors.IsForbidden(err) {
+					// If it encounters a forbidden error this means that the API server was reached
+					// but the CRB is missing - i.e. the admin.conf user does not have permissions
+					// to create its own permission RBAC yet.
+					return true, nil
+				} else if apierrors.IsAlreadyExists(err) {
+					// If the CRB exists it means the admin.conf already has the right
+					// permissions; return.
+					crbExists = true
+					return true, nil
+				} else {
+					// Retry on any other error type.
+					lastError = errors.Wrap(err, "unable to create ClusterRoleBinding")
+					return false, nil
+				}
+			}
+			crbExists = true
+			return true, nil
+		})
+	if err != nil {
+		return nil, lastError
+	}
+
+	// The CRB was created or already existed; return the admin.conf client.
+	if crbExists {
+		return adminClient, nil
+	}
+
+	// If the superAdminClient is nil at this point we cannot proceed creating the CRB; return an error.
+	if superAdminClient == nil {
+		return nil, errors.Errorf("the ClusterRoleBinding for the %s Group is missing but there is no %s to create it",
+			kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding,
+			kubeadmconstants.SuperAdminKubeConfigFileName)
+	}
+
+	// Create the ClusterRoleBinding with the super-admin.conf client.
+	klog.V(1).Infof("creating the ClusterRoleBinding for the %s Group by using %s",
+		kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding,
+		kubeadmconstants.SuperAdminKubeConfigFileName)
+
+	err = wait.PollUntilContextTimeout(
+		ctx,
+		retryInterval,
+		retryTimeout,
+		true, func(ctx context.Context) (bool, error) {
+			if _, err := superAdminClient.RbacV1().ClusterRoleBindings().Create(
+				ctx,
+				clusterRoleBinding,
+				metav1.CreateOptions{},
+			); err != nil {
+				lastError = err
+				if apierrors.IsAlreadyExists(err) {
+					klog.V(5).Infof("ClusterRoleBinding %s already exists.", kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding)
+					return true, nil
+				}
+				// Retry on any other type of error.
+				return false, nil
+			}
+			return true, nil
+		})
+	if err != nil {
+		return nil, errors.Wrapf(lastError, "unable to create the %s ClusterRoleBinding by using %s",
+			kubeadmconstants.ClusterAdminsGroupAndClusterRoleBinding,
+			kubeadmconstants.SuperAdminKubeConfigFileName)
+	}
+
+	// Once the CRB is in place, start using the admin.conf client.
+	return adminClient, nil
 }

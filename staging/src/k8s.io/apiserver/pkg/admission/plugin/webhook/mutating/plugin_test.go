@@ -42,7 +42,7 @@ func BenchmarkAdmit(b *testing.B) {
 	if len(testServerURL) == 0 {
 		b.Log("warning, WEBHOOK_TEST_SERVER_URL not set, starting in-process server, benchmarks will include webhook cost.")
 		b.Log("to run a standalone server, run:")
-		b.Log("go run ./vendor/k8s.io/apiserver/pkg/admission/plugin/webhook/testing/main/main.go")
+		b.Log("go run k8s.io/apiserver/pkg/admission/plugin/webhook/testing/main/main.go")
 		testServer := webhooktesting.NewTestServer(b)
 		testServer.StartTLS()
 		defer testServer.Close()
@@ -274,7 +274,7 @@ func TestWebhookDuration(ts *testing.T) {
 		ts.Run(test.Name, func(t *testing.T) {
 			ctx := context.TODO()
 			if test.InitContext {
-				ctx = request.WithWebhookDurationAndCustomClock(ctx, &clk)
+				ctx = request.WithLatencyTrackersAndCustomClock(ctx, &clk)
 			}
 			wh, err := NewMutatingWebhook(nil)
 			if err != nil {
@@ -299,7 +299,7 @@ func TestWebhookDuration(ts *testing.T) {
 			}
 
 			_ = wh.Admit(ctx, webhooktesting.NewAttribute(ns, nil, test.IsDryRun), objectInterfaces)
-			wd, ok := request.WebhookDurationFrom(ctx)
+			wd, ok := request.LatencyTrackersFrom(ctx)
 			if !ok {
 				if test.InitContext {
 					t.Errorf("expected webhook duration to be initialized")
@@ -310,11 +310,11 @@ func TestWebhookDuration(ts *testing.T) {
 				t.Errorf("expected webhook duration to not be initialized")
 				return
 			}
-			if wd.AdmitTracker.GetLatency() != test.ExpectedDurationSum {
-				t.Errorf("expected admit duration %q got %q", test.ExpectedDurationSum, wd.AdmitTracker.GetLatency())
+			if wd.MutatingWebhookTracker.GetLatency() != test.ExpectedDurationSum {
+				t.Errorf("expected admit duration %q got %q", test.ExpectedDurationSum, wd.MutatingWebhookTracker.GetLatency())
 			}
-			if wd.ValidateTracker.GetLatency() != 0 {
-				t.Errorf("expected validate duraion to be equal to 0 got %q", wd.ValidateTracker.GetLatency())
+			if wd.ValidatingWebhookTracker.GetLatency() != 0 {
+				t.Errorf("expected validate duraion to be equal to 0 got %q", wd.ValidatingWebhookTracker.GetLatency())
 			}
 		})
 	}

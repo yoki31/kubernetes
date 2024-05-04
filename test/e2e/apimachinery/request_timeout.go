@@ -17,13 +17,15 @@ limitations under the License.
 package apimachinery
 
 import (
-	"io/ioutil"
+	"context"
+	"io"
 	"net/http"
 	"strings"
 
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"k8s.io/client-go/rest"
 	"k8s.io/kubernetes/test/e2e/framework"
+	admissionapi "k8s.io/pod-security-admission/api"
 )
 
 const (
@@ -32,8 +34,9 @@ const (
 
 var _ = SIGDescribe("Server request timeout", func() {
 	f := framework.NewDefaultFramework("request-timeout")
+	f.NamespacePodSecurityLevel = admissionapi.LevelPrivileged
 
-	ginkgo.It("should return HTTP status code 400 if the user specifies an invalid timeout in the request URL", func() {
+	ginkgo.It("should return HTTP status code 400 if the user specifies an invalid timeout in the request URL", func(ctx context.Context) {
 		rt := getRoundTripper(f)
 		req := newRequest(f, "invalid")
 
@@ -51,7 +54,7 @@ var _ = SIGDescribe("Server request timeout", func() {
 		}
 	})
 
-	ginkgo.It("the request should be served with a default timeout if the specified timeout in the request URL exceeds maximum allowed", func() {
+	ginkgo.It("the request should be served with a default timeout if the specified timeout in the request URL exceeds maximum allowed", func(ctx context.Context) {
 		rt := getRoundTripper(f)
 		// Choose a timeout that exceeds the default timeout (60s) enforced by the apiserver
 		req := newRequest(f, "3m")
@@ -65,7 +68,7 @@ var _ = SIGDescribe("Server request timeout", func() {
 		}
 	})
 
-	ginkgo.It("default timeout should be used if the specified timeout in the request URL is 0s", func() {
+	ginkgo.It("default timeout should be used if the specified timeout in the request URL is 0s", func(ctx context.Context) {
 		rt := getRoundTripper(f)
 		req := newRequest(f, "0s")
 
@@ -100,7 +103,7 @@ func newRequest(f *framework.Framework, timeout string) *http.Request {
 }
 
 func readBody(response *http.Response) string {
-	raw, err := ioutil.ReadAll(response.Body)
+	raw, err := io.ReadAll(response.Body)
 	framework.ExpectNoError(err)
 
 	return string(raw)

@@ -169,7 +169,7 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 	if eventPathAbs == pluginDirAbs {
 		// If the Flexvolume plugin directory is removed, need to recreate it
 		// in order to keep it under watch.
-		if eventOpIs(event, fsnotify.Remove) {
+		if event.Has(fsnotify.Remove) {
 			if err := prober.createPluginDir(); err != nil {
 				return err
 			}
@@ -181,7 +181,7 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 	}
 
 	// watch newly added subdirectories inside a driver directory
-	if eventOpIs(event, fsnotify.Create) {
+	if event.Has(fsnotify.Create) {
 		if err := prober.addWatchRecursive(eventPathAbs); err != nil {
 			return err
 		}
@@ -197,7 +197,7 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 		driverDirName := strings.Split(eventRelPathToPluginDir, string(os.PathSeparator))[0]
 		driverDirAbs := filepath.Join(pluginDirAbs, driverDirName)
 		// executable is removed, will trigger ProbeRemove event
-		if eventOpIs(event, fsnotify.Remove) && (eventRelPathToPluginDir == getExecutablePathRel(driverDirName) || parentPathAbs == pluginDirAbs) {
+		if event.Has(fsnotify.Remove) && (eventRelPathToPluginDir == getExecutablePathRel(driverDirName) || parentPathAbs == pluginDirAbs) {
 			prober.updateEventsMap(driverDirAbs, volume.ProbeRemove)
 		} else {
 			prober.updateEventsMap(driverDirAbs, volume.ProbeAddOrUpdate)
@@ -228,6 +228,10 @@ func (prober *flexVolumeProber) updateEventsMap(eventDirAbs string, op volume.Pr
 // Each file or directory change triggers two events: one from the watch on itself, another from the watch
 // on its parent directory.
 func (prober *flexVolumeProber) addWatchRecursive(filename string) error {
+	// this may be called with an actual absolute path on Windows (with a C:\ prefix).
+	// But the prober.fs.Walk below will execute filepath.Join(fs.root, filenameAbove), which
+	// will result in an incorrect path, you can't join C:\path and C:\another\path.
+	filename = strings.TrimPrefix(filename, `C:\`)
 	addWatch := func(path string, info os.FileInfo, err error) error {
 		if err == nil && info.IsDir() {
 			if err := prober.watcher.AddWatch(path); err != nil {
@@ -280,8 +284,4 @@ func (prober *flexVolumeProber) testAndSetProbeAllNeeded(newval bool) (oldval bo
 	defer prober.mutex.Unlock()
 	oldval, prober.probeAllNeeded = prober.probeAllNeeded, newval
 	return
-}
-
-func eventOpIs(event fsnotify.Event, op fsnotify.Op) bool {
-	return event.Op&op == op
 }

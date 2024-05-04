@@ -19,7 +19,7 @@ package removeall
 import (
 	"errors"
 	"os"
-	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,7 +33,7 @@ type fakeMounter struct {
 
 // IsLikelyNotMountPoint overrides mount.FakeMounter.IsLikelyNotMountPoint for our use.
 func (f *fakeMounter) IsLikelyNotMountPoint(file string) (bool, error) {
-	name := path.Base(file)
+	name := filepath.Base(file)
 	if strings.HasPrefix(name, "mount") {
 		return false, nil
 	}
@@ -116,11 +116,11 @@ func TestRemoveAllOneFilesystem(t *testing.T) {
 		for _, item := range test.items {
 			if strings.HasSuffix(item, "/") {
 				item = strings.TrimRight(item, "/")
-				if err = os.Mkdir(path.Join(tmpDir, item), 0777); err != nil {
+				if err = os.Mkdir(filepath.Join(tmpDir, item), 0777); err != nil {
 					t.Fatalf("error creating %s: %v", item, err)
 				}
 			} else {
-				f, err := os.Create(path.Join(tmpDir, item))
+				f, err := os.Create(filepath.Join(tmpDir, item))
 				if err != nil {
 					t.Fatalf("error creating %s: %v", item, err)
 				}
@@ -236,11 +236,11 @@ func TestRemoveDirsOneFilesystem(t *testing.T) {
 		for _, item := range test.items {
 			if strings.HasSuffix(item, "/") {
 				item = strings.TrimRight(item, "/")
-				if err = os.Mkdir(path.Join(tmpDir, item), 0777); err != nil {
+				if err = os.Mkdir(filepath.Join(tmpDir, item), 0777); err != nil {
 					t.Fatalf("error creating %s: %v", item, err)
 				}
 			} else {
-				f, err := os.Create(path.Join(tmpDir, item))
+				f, err := os.Create(filepath.Join(tmpDir, item))
 				if err != nil {
 					t.Fatalf("error creating %s: %v", item, err)
 				}

@@ -47,14 +47,14 @@ trap "rm -rf csi-driver-host-path" EXIT
 # Main YAML files.
 mkdir hostpath
 cat >hostpath/README.md <<EOF
-The files in this directory are exact copys of "kubernetes-latest" in
+The files in this directory are exact copies of "kubernetes-latest" in
 https://github.com/kubernetes-csi/csi-driver-host-path/tree/$hostpath_version/deploy/
 
 Do not edit manually. Run $script to refresh the content.
 EOF
 cp -r csi-driver-host-path/deploy/kubernetes-latest/hostpath hostpath/
 cat >hostpath/hostpath/e2e-test-rbac.yaml <<EOF
-# priviledged Pod Security Policy, previously defined just for gcePD via PrivilegedTestPSPClusterRoleBinding()
+# privileged Pod Security Policy, previously defined just for gcePD via PrivilegedTestPSPClusterRoleBinding()
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
@@ -137,5 +137,5 @@ done
 grep -r image: hostpath/hostpath/csi-hostpath-plugin.yaml | while read -r image; do
     version=$(echo "$image" | sed -e 's/.*:\(.*\)/\1/')
     image=$(echo "$image" | sed -e 's/.*image: \([^:]*\).*/\1/')
-    sed -i -e "s;$image:.*;$image:$version;" mock/*.yaml
+    sed -i '' -e "s;$image:.*;$image:$version;" mock/*.yaml
 done

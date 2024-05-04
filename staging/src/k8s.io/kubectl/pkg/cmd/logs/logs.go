@@ -29,14 +29,17 @@ import (
 	"github.com/spf13/cobra"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
 	"k8s.io/client-go/rest"
 	cmdutil "k8s.io/kubectl/pkg/cmd/util"
 	"k8s.io/kubectl/pkg/polymorphichelpers"
 	"k8s.io/kubectl/pkg/scheme"
 	"k8s.io/kubectl/pkg/util"
+	"k8s.io/kubectl/pkg/util/completion"
 	"k8s.io/kubectl/pkg/util/i18n"
 	"k8s.io/kubectl/pkg/util/templates"
 )
@@ -124,14 +127,14 @@ type LogsOptions struct {
 	RESTClientGetter genericclioptions.RESTClientGetter
 	LogsForObject    polymorphichelpers.LogsForObjectFunc
 
-	genericclioptions.IOStreams
+	genericiooptions.IOStreams
 
 	TailSpecified bool
 
 	containerNameFromRefSpecRegexp *regexp.Regexp
 }
 
-func NewLogsOptions(streams genericclioptions.IOStreams, allContainers bool) *LogsOptions {
+func NewLogsOptions(streams genericiooptions.IOStreams, allContainers bool) *LogsOptions {
 	return &LogsOptions{
 		IOStreams:            streams,
 		AllContainers:        allContainers,
@@ -143,7 +146,7 @@ func NewLogsOptions(streams genericclioptions.IOStreams, allContainers bool) *Lo
 }
 
 // NewCmdLogs creates a new pod logs command
-func NewCmdLogs(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
+func NewCmdLogs(f cmdutil.Factory, streams genericiooptions.IOStreams) *cobra.Command {
 	o := NewLogsOptions(streams, false)
 
 	cmd := &cobra.Command{
@@ -152,7 +155,7 @@ func NewCmdLogs(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.C
 		Short:                 i18n.T("Print the logs for a container in a pod"),
 		Long:                  logsLong,
 		Example:               logsExample,
-		ValidArgsFunction:     util.PodResourceNameAndContainerCompletionFunc(f),
+		ValidArgsFunction:     completion.PodResourceNameAndContainerCompletionFunc(f),
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
 			cmdutil.CheckErr(o.Validate())
@@ -177,7 +180,7 @@ func (o *LogsOptions) AddFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&o.InsecureSkipTLSVerifyBackend, "insecure-skip-tls-verify-backend", o.InsecureSkipTLSVerifyBackend,
 		"Skip verifying the identity of the kubelet that logs are requested from.  In theory, an attacker could provide invalid log content back. You might want to use this if your kubelet serving certificates have expired.")
 	cmdutil.AddPodRunningTimeoutFlag(cmd, defaultPodLogsTimeout)
-	cmd.Flags().StringVarP(&o.Selector, "selector", "l", o.Selector, "Selector (label query) to filter on.")
+	cmdutil.AddLabelSelectorFlagVar(cmd, &o.Selector)
 	cmd.Flags().IntVar(&o.MaxFollowConcurrency, "max-log-requests", o.MaxFollowConcurrency, "Specify maximum number of concurrent logs to follow when using by a selector. Defaults to 5.")
 	cmd.Flags().BoolVar(&o.Prefix, "prefix", o.Prefix, "Prefix each log line with the log source (pod name and container name)")
 }
@@ -274,6 +277,9 @@ func (o *LogsOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []str
 		}
 		infos, err := builder.Do().Infos()
 		if err != nil {
+			if apierrors.IsNotFound(err) {
+				err = fmt.Errorf("error from server (NotFound): %w in namespace %q", err, o.Namespace)
+			}
 			return err
 		}
 		if o.Selector == "" && len(infos) != 1 {

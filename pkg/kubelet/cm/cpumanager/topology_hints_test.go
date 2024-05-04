@@ -24,11 +24,14 @@ import (
 	cadvisorapi "github.com/google/cadvisor/info/v1"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
+	pkgfeatures "k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/state"
 	"k8s.io/kubernetes/pkg/kubelet/cm/cpumanager/topology"
-	"k8s.io/kubernetes/pkg/kubelet/cm/cpuset"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager"
 	"k8s.io/kubernetes/pkg/kubelet/cm/topologymanager/bitmask"
+	"k8s.io/utils/cpuset"
 )
 
 type testCase struct {
@@ -62,11 +65,14 @@ func returnMachineInfo() cadvisorapi.MachineInfo {
 	}
 }
 
+type containerOptions struct {
+	request       string
+	limit         string
+	restartPolicy v1.ContainerRestartPolicy
+}
+
 func TestPodGuaranteedCPUs(t *testing.T) {
-	CPUs := [][]struct {
-		request string
-		limit   string
-	}{
+	options := [][]*containerOptions{
 		{
 			{request: "0", limit: "0"},
 		},
@@ -82,17 +88,46 @@ func TestPodGuaranteedCPUs(t *testing.T) {
 		},
 	}
 	// tc for not guaranteed Pod
-	testPod1 := makeMultiContainerPod(CPUs[0], CPUs[0])
-	testPod2 := makeMultiContainerPod(CPUs[0], CPUs[1])
-	testPod3 := makeMultiContainerPod(CPUs[1], CPUs[0])
+	testPod1 := makeMultiContainerPodWithOptions(options[0], options[0])
+	testPod2 := makeMultiContainerPodWithOptions(options[0], options[1])
+	testPod3 := makeMultiContainerPodWithOptions(options[1], options[0])
 	// tc for guaranteed Pod
-	testPod4 := makeMultiContainerPod(CPUs[1], CPUs[1])
-	testPod5 := makeMultiContainerPod(CPUs[2], CPUs[2])
+	testPod4 := makeMultiContainerPodWithOptions(options[1], options[1])
+	testPod5 := makeMultiContainerPodWithOptions(options[2], options[2])
 	// tc for comparing init containers and user containers
-	testPod6 := makeMultiContainerPod(CPUs[1], CPUs[2])
-	testPod7 := makeMultiContainerPod(CPUs[2], CPUs[1])
+	testPod6 := makeMultiContainerPodWithOptions(options[1], options[2])
+	testPod7 := makeMultiContainerPodWithOptions(options[2], options[1])
 	// tc for multi containers
-	testPod8 := makeMultiContainerPod(CPUs[3], CPUs[3])
+	testPod8 := makeMultiContainerPodWithOptions(options[3], options[3])
+	// tc for restartable init containers
+	testPod9 := makeMultiContainerPodWithOptions([]*containerOptions{
+		{request: "1", limit: "1", restartPolicy: v1.ContainerRestartPolicyAlways},
+	}, []*containerOptions{
+		{request: "1", limit: "1"},
+	})
+	testPod10 := makeMultiContainerPodWithOptions([]*containerOptions{
+		{request: "5", limit: "5"},
+		{request: "1", limit: "1", restartPolicy: v1.ContainerRestartPolicyAlways},
+		{request: "2", limit: "2", restartPolicy: v1.ContainerRestartPolicyAlways},
+		{request: "3", limit: "3", restartPolicy: v1.ContainerRestartPolicyAlways},
+	}, []*containerOptions{
+		{request: "1", limit: "1"},
+	})
+	testPod11 := makeMultiContainerPodWithOptions([]*containerOptions{
+		{request: "5", limit: "5"},
+		{request: "1", limit: "1", restartPolicy: v1.ContainerRestartPolicyAlways},
+		{request: "2", limit: "2", restartPolicy: v1.ContainerRestartPolicyAlways},
+		{request: "5", limit: "5"},
+		{request: "3", limit: "3", restartPolicy: v1.ContainerRestartPolicyAlways},
+	}, []*containerOptions{
+		{request: "1", limit: "1"},
+	})
+	testPod12 := makeMultiContainerPodWithOptions([]*containerOptions{
+		{request: "10", limit: "10", restartPolicy: v1.ContainerRestartPolicyAlways},
+		{request: "200", limit: "200"},
+	}, []*containerOptions{
+		{request: "100", limit: "100"},
+	})
 
 	p := staticPolicy{}
 
@@ -141,13 +176,35 @@ func TestPodGuaranteedCPUs(t *testing.T) {
 			pod:         testPod8,
 			expectedCPU: 6,
 		},
+		{
+			name:        "TestCase09: restartable init container + regular container",
+			pod:         testPod9,
+			expectedCPU: 2,
+		},
+		{
+			name:        "TestCase09: multiple restartable init containers",
+			pod:         testPod10,
+			expectedCPU: 7,
+		},
+		{
+			name:        "TestCase11: multiple restartable and regular init containers",
+			pod:         testPod11,
+			expectedCPU: 8,
+		},
+		{
+			name:        "TestCase12: restartable init, regular init and regular container",
+			pod:         testPod12,
+			expectedCPU: 210,
+		},
 	}
 	for _, tc := range tcases {
-		requestedCPU := p.podGuaranteedCPUs(tc.pod)
+		t.Run(tc.name, func(t *testing.T) {
+			requestedCPU := p.podGuaranteedCPUs(tc.pod)
 
-		if requestedCPU != tc.expectedCPU {
-			t.Errorf("Expected in result to be %v , got %v", tc.expectedCPU, requestedCPU)
-		}
+			if requestedCPU != tc.expectedCPU {
+				t.Errorf("Expected in result to be %v , got %v", tc.expectedCPU, requestedCPU)
+			}
+		})
 	}
 }
 
@@ -254,6 +311,186 @@ func TestGetPodTopologyHints(t *testing.T) {
 	}
 }
 
+func TestGetPodTopologyHintsWithPolicyOptions(t *testing.T) {
+	testPod1 := makePod("fakePod", "fakeContainer", "2", "2")
+	testContainer1 := &testPod1.Spec.Containers[0]
+
+	testPod2 := makePod("fakePod", "fakeContainer", "41", "41")
+	testContainer2 := &testPod1.Spec.Containers[0]
+
+	cpuSetAcrossSocket, _ := cpuset.Parse("0-28,40-57")
+
+	m0001, _ := bitmask.NewBitMask(0)
+	m0011, _ := bitmask.NewBitMask(0, 1)
+	m0101, _ := bitmask.NewBitMask(0, 2)
+	m1001, _ := bitmask.NewBitMask(0, 3)
+	m0111, _ := bitmask.NewBitMask(0, 1, 2)
+	m1011, _ := bitmask.NewBitMask(0, 1, 3)
+	m1101, _ := bitmask.NewBitMask(0, 2, 3)
+	m1111, _ := bitmask.NewBitMask(0, 1, 2, 3)
+
+	testCases := []struct {
+		description   string
+		pod           v1.Pod
+		container     v1.Container
+		assignments   state.ContainerCPUAssignments
+		defaultCPUSet cpuset.CPUSet
+		policyOptions map[string]string
+		topology      *topology.CPUTopology
+		expectedHints []topologymanager.TopologyHint
+	}{
+		{
+			// CPU available on numa node[0 ,1]. CPU on numa node 0 can satisfy request of 2 CPU's
+			description:   "AlignBySocket:false, Preferred hints does not contains socket aligned hints",
+			pod:           *testPod1,
+			container:     *testContainer1,
+			defaultCPUSet: cpuset.New(2, 3, 11),
+			topology:      topoDualSocketMultiNumaPerSocketHT,
+			policyOptions: map[string]string{AlignBySocketOption: "false"},
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0001,
+					Preferred:        true,
+				},
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m0101,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1001,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m0111,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1011,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1101,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1111,
+					Preferred:        false,
+				},
+			},
+		},
+		{
+			// CPU available on numa node[0 ,1]. CPU on numa node 0 can satisfy request of 2 CPU's
+			description:   "AlignBySocket:true Preferred hints contains socket aligned hints",
+			pod:           *testPod1,
+			container:     *testContainer1,
+			defaultCPUSet: cpuset.New(2, 3, 11),
+			topology:      topoDualSocketMultiNumaPerSocketHT,
+			policyOptions: map[string]string{AlignBySocketOption: "true"},
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0001,
+					Preferred:        true,
+				},
+				{
+					NUMANodeAffinity: m0011,
+					Preferred:        true,
+				},
+				{
+					NUMANodeAffinity: m0101,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1001,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m0111,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1011,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1101,
+					Preferred:        false,
+				},
+				{
+					NUMANodeAffinity: m1111,
+					Preferred:        false,
+				},
+			},
+		},
+		{
+			// CPU available on numa node[0 ,1]. CPU on numa nodes across sockets can satisfy request of 2 CPU's
+			description:   "AlignBySocket:true Preferred hints are spread across socket since 2 sockets are required",
+			pod:           *testPod2,
+			container:     *testContainer2,
+			defaultCPUSet: cpuSetAcrossSocket,
+			topology:      topoDualSocketMultiNumaPerSocketHT,
+			policyOptions: map[string]string{AlignBySocketOption: "true"},
+			expectedHints: []topologymanager.TopologyHint{
+				{
+					NUMANodeAffinity: m0111,
+					Preferred:        true,
+				},
+				{
+					NUMANodeAffinity: m1111,
+					Preferred:        true,
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.description, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, pkgfeatures.CPUManagerPolicyAlphaOptions, true)
+
+			var activePods []*v1.Pod
+			for p := range testCase.assignments {
+				pod := v1.Pod{}
+				pod.UID = types.UID(p)
+				for c := range testCase.assignments[p] {
+					container := v1.Container{}
+					container.Name = c
+					pod.Spec.Containers = append(pod.Spec.Containers, container)
+				}
+				activePods = append(activePods, &pod)
+			}
+			policyOpt, _ := NewStaticPolicyOptions(testCase.policyOptions)
+			m := manager{
+				policy: &staticPolicy{
+					topology: testCase.topology,
+					options:  policyOpt,
+				},
+				state: &mockState{
+					assignments:   testCase.assignments,
+					defaultCPUSet: testCase.defaultCPUSet,
+				},
+				topology:          testCase.topology,
+				activePods:        func() []*v1.Pod { return activePods },
+				podStatusProvider: mockPodStatusProvider{},
+				sourcesReady:      &sourcesReadyStub{},
+			}
+
+			podHints := m.GetPodTopologyHints(&testCase.pod)[string(v1.ResourceCPU)]
+			sort.SliceStable(podHints, func(i, j int) bool {
+				return podHints[i].LessThan(podHints[j])
+			})
+			sort.SliceStable(testCase.expectedHints, func(i, j int) bool {
+				return testCase.expectedHints[i].LessThan(testCase.expectedHints[j])
+			})
+			if !reflect.DeepEqual(testCase.expectedHints, podHints) {
+				t.Errorf("Expected in result to be %v , got %v", testCase.expectedHints, podHints)
+			}
+		})
+	}
+}
+
 func returnTestCases() []testCase {
 	testPod1 := makePod("fakePod", "fakeContainer", "2", "2")
 	testContainer1 := &testPod1.Spec.Containers[0]
@@ -273,7 +510,7 @@ func returnTestCases() []testCase {
 			name:          "Request 2 CPUs, 4 available on NUMA 0, 6 available on NUMA 1",
 			pod:           *testPod1,
 			container:     *testContainer1,
-			defaultCPUSet: cpuset.NewCPUSet(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			defaultCPUSet: cpuset.New(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: firstSocketMask,
@@ -293,7 +530,7 @@ func returnTestCases() []testCase {
 			name:          "Request 5 CPUs, 4 available on NUMA 0, 6 available on NUMA 1",
 			pod:           *testPod2,
 			container:     *testContainer2,
-			defaultCPUSet: cpuset.NewCPUSet(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			defaultCPUSet: cpuset.New(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: secondSocketMask,
@@ -309,7 +546,7 @@ func returnTestCases() []testCase {
 			name:          "Request 7 CPUs, 4 available on NUMA 0, 6 available on NUMA 1",
 			pod:           *testPod3,
 			container:     *testContainer3,
-			defaultCPUSet: cpuset.NewCPUSet(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			defaultCPUSet: cpuset.New(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: crossSocketMask,
@@ -321,14 +558,14 @@ func returnTestCases() []testCase {
 			name:          "Request 11 CPUs, 4 available on NUMA 0, 6 available on NUMA 1",
 			pod:           *testPod4,
 			container:     *testContainer4,
-			defaultCPUSet: cpuset.NewCPUSet(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+			defaultCPUSet: cpuset.New(2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
 			expectedHints: nil,
 		},
 		{
 			name:          "Request 2 CPUs, 1 available on NUMA 0, 1 available on NUMA 1",
 			pod:           *testPod1,
 			container:     *testContainer1,
-			defaultCPUSet: cpuset.NewCPUSet(0, 3),
+			defaultCPUSet: cpuset.New(0, 3),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: crossSocketMask,
@@ -340,7 +577,7 @@ func returnTestCases() []testCase {
 			name:          "Request more CPUs than available",
 			pod:           *testPod2,
 			container:     *testContainer2,
-			defaultCPUSet: cpuset.NewCPUSet(0, 1, 2, 3),
+			defaultCPUSet: cpuset.New(0, 1, 2, 3),
 			expectedHints: nil,
 		},
 		{
@@ -349,10 +586,10 @@ func returnTestCases() []testCase {
 			container: *testContainer1,
 			assignments: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
-					testContainer1.Name: cpuset.NewCPUSet(0, 6),
+					testContainer1.Name: cpuset.New(0, 6),
 				},
 			},
-			defaultCPUSet: cpuset.NewCPUSet(),
+			defaultCPUSet: cpuset.New(),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: firstSocketMask,
@@ -370,10 +607,10 @@ func returnTestCases() []testCase {
 			container: *testContainer1,
 			assignments: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
-					testContainer1.Name: cpuset.NewCPUSet(3, 9),
+					testContainer1.Name: cpuset.New(3, 9),
 				},
 			},
-			defaultCPUSet: cpuset.NewCPUSet(),
+			defaultCPUSet: cpuset.New(),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: secondSocketMask,
@@ -391,10 +628,10 @@ func returnTestCases() []testCase {
 			container: *testContainer4,
 			assignments: state.ContainerCPUAssignments{
 				string(testPod4.UID): map[string]cpuset.CPUSet{
-					testContainer4.Name: cpuset.NewCPUSet(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+					testContainer4.Name: cpuset.New(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
 				},
 			},
-			defaultCPUSet: cpuset.NewCPUSet(),
+			defaultCPUSet: cpuset.New(),
 			expectedHints: []topologymanager.TopologyHint{
 				{
 					NUMANodeAffinity: crossSocketMask,
@@ -408,10 +645,10 @@ func returnTestCases() []testCase {
 			container: *testContainer1,
 			assignments: state.ContainerCPUAssignments{
 				string(testPod1.UID): map[string]cpuset.CPUSet{
-					testContainer1.Name: cpuset.NewCPUSet(0, 6, 3, 9),
+					testContainer1.Name: cpuset.New(0, 6, 3, 9),
 				},
 			},
-			defaultCPUSet: cpuset.NewCPUSet(),
+			defaultCPUSet: cpuset.New(),
 			expectedHints: []topologymanager.TopologyHint{},
 		},
 		{
@@ -420,10 +657,10 @@ func returnTestCases() []testCase {
 			container: *testContainer4,
 			assignments: state.ContainerCPUAssignments{
 				string(testPod4.UID): map[string]cpuset.CPUSet{
-					testContainer4.Name: cpuset.NewCPUSet(0, 6, 3, 9),
+					testContainer4.Name: cpuset.New(0, 6, 3, 9),
 				},
 			},
-			defaultCPUSet: cpuset.NewCPUSet(),
+			defaultCPUSet: cpuset.New(),
 			expectedHints: []topologymanager.TopologyHint{},
 		},
 	}
